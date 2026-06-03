@@ -1,0 +1,771 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>CRM Comercial</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Figtree:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+  <style>
+    body { font-family: 'Figtree', system-ui, sans-serif; }
+    .tnum { font-variant-numeric: tabular-nums; }
+    ::-webkit-scrollbar { height: 8px; width: 8px; }
+    ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 8px; }
+  </style>
+</head>
+<body class="bg-slate-50">
+  <div id="root"></div>
+
+  <!-- ============================================================= -->
+  <!--  CONFIGURACIÓN SUPABASE                                       -->
+  <!--  Pega aquí tus 2 credenciales (Supabase > Project Settings >  -->
+  <!--  API). Mientras estén vacías, el CRM corre en MODO LOCAL.     -->
+  <!-- ============================================================= -->
+  <script>
+    window.SUPABASE_URL = "https://jmsaqilfnsolwptpyplm.supabase.co";        // ej. https://abcdxyz.supabase.co
+    window.SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imptc2FxaWxmbnNvbHdwdHB5cGxtIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODA0NDcyMjcsImV4cCI6MjA5NjAyMzIyN30.E8CTZxu4DalESix97wUZnk8v_SQ-xTq_0snyzJ2nuk4";   // la "anon public" key
+  </script>
+
+  <script type="text/babel" data-presets="react">
+  const { useState, useEffect, useMemo, useCallback } = React;
+
+  /* ----------------------------------------------------------------- */
+  /*  Configuración base                                               */
+  /* ----------------------------------------------------------------- */
+  const STAGES = [
+    { id: "nuevo",       label: "Nuevo",             prob: 10,  color: "#64748b" },
+    { id: "calificado",  label: "Calificado",        prob: 25,  color: "#0ea5e9" },
+    { id: "diagnostico", label: "Diagnóstico",       prob: 45,  color: "#6366f1" },
+    { id: "propuesta",   label: "Propuesta enviada", prob: 65,  color: "#8b5cf6" },
+    { id: "negociacion", label: "Negociación",       prob: 80,  color: "#f59e0b" },
+    { id: "ganada",      label: "Ganada",            prob: 100, color: "#10b981" },
+    { id: "perdida",     label: "Perdida",           prob: 0,   color: "#ef4444" },
+  ];
+  const CLIENT_TYPES = [
+    { id: "privada",       label: "Privada / Corporativo", color: "#0d9488", bg: "#ccfbf1" },
+    { id: "desarrollador", label: "Desarrollador inmob.",  color: "#7c3aed", bg: "#ede9fe" },
+    { id: "gobierno",      label: "Gobierno / Licitación", color: "#b45309", bg: "#fef3c7" },
+  ];
+  const PRIORITIES = [
+    { id: "alta",  label: "Alta",  color: "#dc2626" },
+    { id: "media", label: "Media", color: "#d97706" },
+    { id: "baja",  label: "Baja",  color: "#65a30d" },
+  ];
+  const ORIGINS = [
+    { id: "referido",   label: "Referido" },
+    { id: "digital",    label: "Redes sociales / web" },
+    { id: "frio",       label: "Prospección en frío" },
+    { id: "licitacion", label: "Licitación / portal gob." },
+    { id: "evento",     label: "Evento / networking" },
+    { id: "otro",       label: "Otro" },
+  ];
+
+  const fmtMXN = (n) => new Intl.NumberFormat("es-MX", { style: "currency", currency: "MXN", maximumFractionDigits: 0 }).format(n || 0);
+  const fmtDate = (d) => (d ? new Date(d + "T00:00:00").toLocaleDateString("es-MX", { day: "2-digit", month: "short", year: "numeric" }) : "—");
+  const todayISO = () => new Date().toISOString().slice(0, 10);
+  const uid = () => (crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(36) + Math.random().toString(36).slice(2));
+  const stageOf = (id) => STAGES.find((s) => s.id === id) || STAGES[0];
+  const typeOf = (id) => CLIENT_TYPES.find((t) => t.id === id) || CLIENT_TYPES[0];
+  const originOf = (id) => ORIGINS.find((o) => o.id === id);
+
+  /* ----------------------------------------------------------------- */
+  /*  Iconos (SVG inline)                                              */
+  /* ----------------------------------------------------------------- */
+  const P = {
+    dashboard: "M3 13h8V3H3zM13 21h8V11h-8zM13 3v6h8V3zM3 21h8v-6H3z",
+    kanban: "M6 5v11M12 5v6M18 5v14M3 3h18v18H3z",
+    users: "M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8zM22 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75",
+    check: "M9 11l3 3L22 4M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11",
+    cal: "M8 2v4M16 2v4M3 10h18M5 4h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2z",
+    plus: "M12 5v14M5 12h14",
+    x: "M18 6 6 18M6 6l12 12",
+    search: "M21 21l-4.35-4.35M11 19a8 8 0 1 0 0-16 8 8 0 0 0 0 16z",
+    download: "M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3",
+    trash: "M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2",
+    building: "M3 21h18M5 21V7l8-4v18M19 21V11l-6-4M9 9v.01M9 12v.01M9 15v.01M9 18v.01",
+    phone: "M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.13.96.36 1.9.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.91.34 1.85.57 2.81.7A2 2 0 0 1 22 16.92z",
+    mail: "M4 4h16a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2zM22 6l-10 7L2 6",
+    alert: "M12 9v4M12 17h.01M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z",
+    trending: "M22 7l-8.5 8.5-5-5L2 17",
+    target: "M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20zM12 18a6 6 0 1 0 0-12 6 6 0 0 0 0 12zM12 14a2 2 0 1 0 0-4 2 2 0 0 0 0 4z",
+    award: "M12 15a7 7 0 1 0 0-14 7 7 0 0 0 0 14zM8.21 13.89 7 23l5-3 5 3-1.21-9.12",
+    wallet: "M21 12V7H5a2 2 0 0 1 0-4h14v4M3 5v14a2 2 0 0 0 2 2h16v-5M18 12a2 2 0 0 0 0 4h4v-4z",
+    rotate: "M3 12a9 9 0 1 0 9-9 9 9 0 0 0-6.36 2.64L3 8M3 3v5h5",
+    grip: "M9 5h.01M9 12h.01M9 19h.01M15 5h.01M15 12h.01M15 19h.01",
+    circleCheck: "M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20zM9 12l2 2 4-4",
+    circle: "M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20z",
+    clock: "M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20zM12 6v6l4 2",
+    logout: "M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9",
+    refresh: "M23 4v6h-6M1 20v-6h6M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15",
+    chevR: "M9 18l6-6-6-6",
+    chevL: "M15 18l-6-6 6-6",
+  };
+  const Icon = ({ n, s = 16, className = "", style }) => (
+    <svg width={s} height={s} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className} style={style}>
+      <path d={P[n]} />
+    </svg>
+  );
+
+  /* ----------------------------------------------------------------- */
+  /*  Capa de datos: Supabase (nube) o localStorage (local)            */
+  /* ----------------------------------------------------------------- */
+  const CLOUD = !!(window.SUPABASE_URL && window.SUPABASE_ANON_KEY);
+  const supa = CLOUD ? window.supabase.createClient(window.SUPABASE_URL, window.SUPABASE_ANON_KEY) : null;
+  const KIND = { opportunities: "opportunity", contacts: "contact", tasks: "task" };
+  const LS_KEY = "crm-data-v1";
+
+  const SEED = { opportunities: [], contacts: [], tasks: [] };
+
+  const db = {
+    async list() {
+      if (!CLOUD) {
+        const raw = localStorage.getItem(LS_KEY);
+        if (!raw) { localStorage.setItem(LS_KEY, JSON.stringify(SEED)); return SEED; }
+        return JSON.parse(raw);
+      }
+      const { data, error } = await supa.from("records").select("id, kind, data");
+      if (error) throw error;
+      const out = { opportunities: [], contacts: [], tasks: [] };
+      for (const row of data) {
+        const key = Object.keys(KIND).find((k) => KIND[k] === row.kind);
+        if (key) out[key].push({ id: row.id, ...row.data });
+      }
+      return out;
+    },
+    async save(key, item) {
+      if (!CLOUD) {
+        const all = JSON.parse(localStorage.getItem(LS_KEY) || JSON.stringify({ opportunities: [], contacts: [], tasks: [] }));
+        const exists = all[key].some((x) => x.id === item.id);
+        all[key] = exists ? all[key].map((x) => (x.id === item.id ? item : x)) : [item, ...all[key]];
+        localStorage.setItem(LS_KEY, JSON.stringify(all));
+        return;
+      }
+      const { id, ...rest } = item;
+      const { error } = await supa.from("records").upsert({ id, kind: KIND[key], data: rest, updated_at: new Date().toISOString() });
+      if (error) throw error;
+    },
+    async remove(key, id) {
+      if (!CLOUD) {
+        const all = JSON.parse(localStorage.getItem(LS_KEY) || "{}");
+        all[key] = (all[key] || []).filter((x) => x.id !== id);
+        localStorage.setItem(LS_KEY, JSON.stringify(all));
+        return;
+      }
+      const { error } = await supa.from("records").delete().eq("id", id);
+      if (error) throw error;
+    },
+    async wipe() {
+      if (!CLOUD) { localStorage.setItem(LS_KEY, JSON.stringify({ opportunities: [], contacts: [], tasks: [] })); return; }
+      const { error } = await supa.from("records").delete().neq("id", "00000000-0000-0000-0000-000000000000");
+      if (error) throw error;
+    },
+  };
+
+  /* ----------------------------------------------------------------- */
+  /*  UI reutilizable                                                  */
+  /* ----------------------------------------------------------------- */
+  const Badge = ({ color, bg, children }) => (
+    <span className="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium" style={{ color, backgroundColor: bg }}>{children}</span>
+  );
+  const Field = ({ label, children }) => (
+    <label className="block"><span className="mb-1 block text-xs font-medium text-slate-500">{label}</span>{children}</label>
+  );
+  const inputCls = "w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-800 outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100";
+  const Modal = ({ title, onClose, children }) => (
+    <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-slate-900/40 p-4 backdrop-blur-sm" onMouseDown={onClose}>
+      <div className="mt-10 w-full max-w-lg rounded-2xl bg-white shadow-xl" onMouseDown={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between border-b border-slate-100 px-5 py-4">
+          <h3 className="text-base font-semibold text-slate-800">{title}</h3>
+          <button onClick={onClose} className="rounded-lg p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-600"><Icon n="x" s={18} /></button>
+        </div>
+        <div className="p-5">{children}</div>
+      </div>
+    </div>
+  );
+
+  /* ----------------------------------------------------------------- */
+  /*  Login (solo modo nube)                                           */
+  /* ----------------------------------------------------------------- */
+  function Login({ onIn }) {
+    const [email, setEmail] = useState("");
+    const [pass, setPass] = useState("");
+    const [err, setErr] = useState("");
+    const [busy, setBusy] = useState(false);
+    const submit = async () => {
+      setErr(""); setBusy(true);
+      try {
+        const { error } = await supa.auth.signInWithPassword({ email, password: pass });
+        if (error) throw error;
+        onIn();
+      } catch (e) { setErr("Correo o contraseña incorrectos."); } finally { setBusy(false); }
+    };
+    return (
+      <div className="flex min-h-screen items-center justify-center px-4">
+        <div className="w-full max-w-sm rounded-2xl border border-slate-200 bg-white p-7 shadow-sm">
+          <div className="mb-5 flex items-center gap-2.5">
+            <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-slate-900 text-sm font-bold text-white">C</div>
+            <div><h1 className="text-base font-bold leading-none text-slate-900">CRM Comercial</h1><p className="mt-1 text-xs text-slate-400">Acceso del equipo</p></div>
+          </div>
+          <div className="space-y-3">
+            <Field label="Correo"><input className={inputCls} type="email" value={email} onChange={(e) => setEmail(e.target.value)} onKeyDown={(e)=>e.key==="Enter"&&submit()} /></Field>
+            <Field label="Contraseña"><input className={inputCls} type="password" value={pass} onChange={(e) => setPass(e.target.value)} onKeyDown={(e)=>e.key==="Enter"&&submit()} /></Field>
+            {err && <p className="text-xs text-red-500">{err}</p>}
+            <button onClick={submit} disabled={busy} className="w-full rounded-lg bg-emerald-600 py-2 text-sm font-medium text-white hover:bg-emerald-700 disabled:opacity-50">{busy ? "Entrando…" : "Entrar"}</button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  /* ----------------------------------------------------------------- */
+  /*  App                                                              */
+  /* ----------------------------------------------------------------- */
+  function App() {
+    const [authed, setAuthed] = useState(!CLOUD);
+    const [checking, setChecking] = useState(CLOUD);
+    const [data, setData] = useState({ opportunities: [], contacts: [], tasks: [] });
+    const [loading, setLoading] = useState(true);
+    const [tab, setTab] = useState("dashboard");
+    const [search, setSearch] = useState("");
+
+    useEffect(() => {
+      if (!CLOUD) return;
+      supa.auth.getSession().then(({ data }) => { setAuthed(!!data.session); setChecking(false); });
+      const { data: sub } = supa.auth.onAuthStateChange((_e, session) => setAuthed(!!session));
+      return () => sub.subscription.unsubscribe();
+    }, []);
+
+    const reload = useCallback(async () => {
+      try { setData(await db.list()); } catch (e) { console.error(e); } finally { setLoading(false); }
+    }, []);
+
+    useEffect(() => { if (authed) reload(); }, [authed, reload]);
+    useEffect(() => {
+      if (!authed) return;
+      const onFocus = () => reload();
+      window.addEventListener("focus", onFocus);
+      return () => window.removeEventListener("focus", onFocus);
+    }, [authed, reload]);
+
+    const upsert = async (key, item) => {
+      setData((d) => { const ex = d[key].some((x) => x.id === item.id); return { ...d, [key]: ex ? d[key].map((x) => x.id === item.id ? item : x) : [item, ...d[key]] }; });
+      try { await db.save(key, item); } catch (e) { console.error(e); reload(); }
+    };
+    const remove = async (key, id) => {
+      setData((d) => ({ ...d, [key]: d[key].filter((x) => x.id !== id) }));
+      try { await db.remove(key, id); } catch (e) { console.error(e); reload(); }
+    };
+    const resetAll = async () => { if (window.confirm("¿Borrar todos los datos? Esta acción no se puede deshacer.")) { setData({ opportunities: [], contacts: [], tasks: [] }); try { await db.wipe(); } catch (e) { console.error(e); } } };
+
+    if (checking) return <Splash text="Verificando sesión…" />;
+    if (!authed) return <Login onIn={reload} />;
+    if (loading) return <Splash text="Cargando datos…" />;
+
+    const tabs = [
+      { id: "dashboard", label: "Dashboard", n: "dashboard" },
+      { id: "pipeline",  label: "Pipeline",  n: "kanban" },
+      { id: "contactos", label: "Contactos", n: "users" },
+      { id: "tareas",    label: "Tareas",    n: "check" },
+      { id: "calendario",label: "Calendario",n: "cal" },
+    ];
+
+    return (
+      <div className="min-h-screen bg-slate-50 text-slate-800">
+        <header className="border-b border-slate-200 bg-white">
+          <div className="mx-auto flex max-w-7xl items-center justify-between px-5 py-3">
+            <div className="flex items-center gap-2.5">
+              <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-slate-900 text-sm font-bold text-white">C</div>
+              <div>
+                <h1 className="text-sm font-bold leading-none text-slate-900">CRM Comercial</h1>
+                <p className="mt-0.5 text-[11px] text-slate-400">{CLOUD ? "Pipeline compartido del equipo" : "Modo local (este navegador)"}</p>
+              </div>
+            </div>
+            <div className="flex items-center gap-1">
+              <button onClick={reload} title="Actualizar" className="rounded-lg p-2 text-slate-400 hover:bg-slate-100 hover:text-slate-600"><Icon n="refresh" s={15} /></button>
+              <button onClick={resetAll} className="flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs text-slate-400 hover:bg-slate-100 hover:text-slate-600"><Icon n="rotate" s={13} /> Reiniciar</button>
+              {CLOUD && <button onClick={() => supa.auth.signOut()} className="flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs text-slate-400 hover:bg-slate-100 hover:text-slate-600"><Icon n="logout" s={13} /> Salir</button>}
+            </div>
+          </div>
+          <div className="mx-auto flex max-w-7xl items-center gap-1 overflow-x-auto px-3">
+            {tabs.map((t) => {
+              const active = tab === t.id;
+              return (
+                <button key={t.id} onClick={() => setTab(t.id)} className={"flex flex-shrink-0 items-center gap-2 border-b-2 px-3 py-2.5 text-sm font-medium transition-colors " + (active ? "border-emerald-500 text-emerald-700" : "border-transparent text-slate-500 hover:text-slate-800")}>
+                  <Icon n={t.n} s={15} /> {t.label}
+                </button>
+              );
+            })}
+          </div>
+        </header>
+        <main className="mx-auto max-w-7xl px-5 py-6">
+          {tab === "dashboard"  && <Dashboard data={data} />}
+          {tab === "pipeline"   && <Pipeline data={data} upsert={upsert} remove={remove} />}
+          {tab === "contactos"  && <Contacts data={data} upsert={upsert} remove={remove} search={search} setSearch={setSearch} />}
+          {tab === "tareas"     && <Tasks data={data} upsert={upsert} remove={remove} />}
+          {tab === "calendario" && <CalendarView data={data} />}
+        </main>
+      </div>
+    );
+  }
+
+  const Splash = ({ text }) => (
+    <div className="flex h-screen items-center justify-center">
+      <div className="flex items-center gap-3 text-slate-400">
+        <div className="h-4 w-4 animate-spin rounded-full border-2 border-slate-300 border-t-emerald-500" />{text}
+      </div>
+    </div>
+  );
+
+  /* ----------------------------------------------------------------- */
+  /*  Dashboard                                                        */
+  /* ----------------------------------------------------------------- */
+  function Dashboard({ data }) {
+    const m = useMemo(() => {
+      const opps = data.opportunities;
+      const abiertas = opps.filter((o) => o.etapa !== "ganada" && o.etapa !== "perdida");
+      const ganadas = opps.filter((o) => o.etapa === "ganada");
+      const perdidas = opps.filter((o) => o.etapa === "perdida");
+      const valorAbierto = abiertas.reduce((s, o) => s + (o.valor || 0), 0);
+      const ponderado = abiertas.reduce((s, o) => s + (o.valor || 0) * stageOf(o.etapa).prob / 100, 0);
+      const valorGanado = ganadas.reduce((s, o) => s + (o.valor || 0), 0);
+      const conv = (ganadas.length + perdidas.length) ? Math.round((ganadas.length / (ganadas.length + perdidas.length)) * 100) : 0;
+      const porEtapa = STAGES.filter((s) => s.id !== "ganada" && s.id !== "perdida").map((s) => ({ label: s.label, valor: opps.filter((o) => o.etapa === s.id).reduce((a, o) => a + (o.valor || 0), 0), color: s.color }));
+      const porTipo = CLIENT_TYPES.map((t) => ({ label: t.label, valor: abiertas.filter((o) => o.tipo === t.id).reduce((a, o) => a + (o.valor || 0), 0), color: t.color })).filter((x) => x.valor > 0);
+      const porOrigen = ORIGINS.map((o) => ({ label: o.label, count: opps.filter((x) => x.origen === o.id).length })).filter((x) => x.count > 0).sort((a, b) => b.count - a.count);
+      return { abiertas, ganadas, valorAbierto, ponderado, valorGanado, conv, porEtapa, porTipo, porOrigen };
+    }, [data]);
+
+    const maxEtapa = Math.max(1, ...m.porEtapa.map((e) => e.valor));
+    const totalTipo = m.porTipo.reduce((s, t) => s + t.valor, 0) || 1;
+    const tareasVencidas = data.tasks.filter((t) => !t.hecha && t.fecha < todayISO());
+    const tareasHoy = data.tasks.filter((t) => !t.hecha && t.fecha === todayISO());
+
+    const kpis = [
+      { label: "Valor en pipeline", value: fmtMXN(m.valorAbierto), sub: m.abiertas.length + " oportunidades abiertas", n: "wallet", color: "#0d9488" },
+      { label: "Valor ponderado", value: fmtMXN(m.ponderado), sub: "Ajustado por probabilidad", n: "trending", color: "#6366f1" },
+      { label: "Ganado", value: fmtMXN(m.valorGanado), sub: m.ganadas.length + " cerradas", n: "award", color: "#10b981" },
+      { label: "Tasa de cierre", value: m.conv + "%", sub: "Ganadas vs. perdidas", n: "target", color: "#f59e0b" },
+    ];
+
+    return (
+      <div className="space-y-6">
+        <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
+          {kpis.map((k) => (
+            <div key={k.label} className="rounded-2xl border border-slate-200 bg-white p-4">
+              <div className="flex items-center gap-2">
+                <div className="flex h-7 w-7 items-center justify-center rounded-lg" style={{ backgroundColor: k.color + "1a" }}><Icon n={k.n} s={15} style={{ color: k.color }} /></div>
+                <span className="text-xs font-medium text-slate-500">{k.label}</span>
+              </div>
+              <p className="tnum mt-3 text-2xl font-bold text-slate-900">{k.value}</p>
+              <p className="mt-1 text-xs text-slate-400">{k.sub}</p>
+            </div>
+          ))}
+        </div>
+
+        <div className="grid gap-4 lg:grid-cols-5">
+          <div className="rounded-2xl border border-slate-200 bg-white p-5 lg:col-span-3">
+            <h3 className="mb-4 text-sm font-semibold text-slate-700">Valor por etapa</h3>
+            {m.porEtapa.some((e) => e.valor > 0) ? (
+              <div className="space-y-3">
+                {m.porEtapa.map((e) => (
+                  <div key={e.label} className="flex items-center gap-3">
+                    <span className="w-32 flex-shrink-0 text-xs text-slate-500">{e.label}</span>
+                    <div className="h-6 flex-1 overflow-hidden rounded-md bg-slate-100">
+                      <div className="flex h-full items-center justify-end rounded-md pr-2 transition-all" style={{ width: Math.max(4, (e.valor / maxEtapa) * 100) + "%", backgroundColor: e.color }}>
+                        {e.valor > 0 && <span className="tnum text-[10px] font-semibold text-white">{fmtMXN(e.valor)}</span>}
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : <Empty text="Sin oportunidades abiertas todavía." />}
+          </div>
+
+          <div className="rounded-2xl border border-slate-200 bg-white p-5 lg:col-span-2">
+            <h3 className="mb-4 text-sm font-semibold text-slate-700">Pipeline por tipo</h3>
+            {m.porTipo.length ? (
+              <div className="space-y-4">
+                <div className="flex h-3 overflow-hidden rounded-full bg-slate-100">
+                  {m.porTipo.map((t) => <div key={t.label} style={{ width: (t.valor / totalTipo) * 100 + "%", backgroundColor: t.color }} />)}
+                </div>
+                {m.porTipo.map((t) => (
+                  <div key={t.label} className="flex items-center justify-between text-sm">
+                    <span className="flex items-center gap-2 text-slate-600"><span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: t.color }} />{t.label}</span>
+                    <span className="tnum font-medium text-slate-700">{fmtMXN(t.valor)}</span>
+                  </div>
+                ))}
+              </div>
+            ) : <Empty text="Sin datos por tipo." />}
+          </div>
+        </div>
+
+        <div className="grid gap-4 md:grid-cols-2">
+          <TaskAlert title="Seguimientos vencidos" tasks={tareasVencidas} tone="red" />
+          <TaskAlert title="Vencen hoy" tasks={tareasHoy} tone="amber" />
+        </div>
+
+        {m.porOrigen.length > 0 && (
+          <div className="rounded-2xl border border-slate-200 bg-white p-5">
+            <h3 className="mb-4 text-sm font-semibold text-slate-700">Origen de las oportunidades</h3>
+            <div className="grid grid-cols-2 gap-x-8 gap-y-3 sm:grid-cols-3">
+              {m.porOrigen.map((o) => (
+                <div key={o.label} className="flex items-center justify-between border-b border-slate-100 pb-2 text-sm">
+                  <span className="text-slate-600">{o.label}</span>
+                  <span className="tnum font-semibold text-slate-800">{o.count}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  }
+  const Empty = ({ text }) => <div className="flex h-[180px] items-center justify-center text-sm text-slate-300">{text}</div>;
+
+  function TaskAlert({ title, tasks, tone }) {
+    const c = tone === "red" ? { ic: "#ef4444", bg: "#fef2f2" } : { ic: "#f59e0b", bg: "#fffbeb" };
+    return (
+      <div className="rounded-2xl border border-slate-200 bg-white p-5">
+        <div className="mb-3 flex items-center gap-2">
+          <div className="flex h-6 w-6 items-center justify-center rounded-lg" style={{ backgroundColor: c.bg }}><Icon n={tone === "red" ? "alert" : "clock"} s={13} style={{ color: c.ic }} /></div>
+          <h3 className="text-sm font-semibold text-slate-700">{title}</h3>
+          <span className="tnum ml-auto rounded-full bg-slate-100 px-2 py-0.5 text-xs font-medium text-slate-500">{tasks.length}</span>
+        </div>
+        {tasks.length === 0 ? <p className="py-4 text-center text-xs text-slate-300">Nada por aquí. Bien.</p> : (
+          <ul className="space-y-2">{tasks.slice(0, 5).map((t) => (
+            <li key={t.id} className="flex items-center gap-2 text-sm"><span className="h-1.5 w-1.5 rounded-full" style={{ backgroundColor: c.ic }} /><span className="text-slate-700">{t.titulo}</span>{t.vinculo && <span className="text-xs text-slate-400">· {t.vinculo}</span>}</li>
+          ))}</ul>
+        )}
+      </div>
+    );
+  }
+
+  /* ----------------------------------------------------------------- */
+  /*  Pipeline (kanban drag & drop)                                    */
+  /* ----------------------------------------------------------------- */
+  function Pipeline({ data, upsert, remove }) {
+    const [editing, setEditing] = useState(null);
+    const [dragId, setDragId] = useState(null);
+    const [over, setOver] = useState(null);
+
+    const exportCSV = () => {
+      const headers = ["Nombre", "Empresa", "Contacto", "Tipo", "Origen", "Valor", "Etapa", "Cierre estimado", "Responsable", "Notas"];
+      const rows = data.opportunities.map((o) => [o.nombre, o.empresa, o.contacto, typeOf(o.tipo).label, (originOf(o.origen) || {}).label || "", o.valor, stageOf(o.etapa).label, o.cierre, o.responsable, (o.notas || "").replace(/\n/g, " ")]);
+      const csv = [headers, ...rows].map((r) => r.map((c) => '"' + String(c == null ? "" : c).replace(/"/g, '""') + '"').join(",")).join("\n");
+      const blob = new Blob(["\uFEFF" + csv], { type: "text/csv;charset=utf-8;" });
+      const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = "pipeline_" + todayISO() + ".csv"; a.click();
+    };
+    const onDrop = (stageId) => {
+      if (!dragId) return;
+      const o = data.opportunities.find((x) => x.id === dragId);
+      if (o && o.etapa !== stageId) upsert("opportunities", { ...o, etapa: stageId });
+      setDragId(null); setOver(null);
+    };
+    const empty = { id: null, nombre: "", empresa: "", contacto: "", tipo: "privada", origen: "", valor: "", etapa: "nuevo", cierre: todayISO(), responsable: "", notas: "" };
+
+    return (
+      <div className="space-y-4">
+        <div className="flex items-center justify-between">
+          <p className="text-sm text-slate-500"><span className="font-semibold text-slate-700">{data.opportunities.length}</span> oportunidades · arrastra las tarjetas</p>
+          <div className="flex gap-2">
+            <button onClick={exportCSV} className="flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm font-medium text-slate-600 hover:bg-slate-50"><Icon n="download" s={14} /> CSV</button>
+            <button onClick={() => setEditing(empty)} className="flex items-center gap-1.5 rounded-lg bg-emerald-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-emerald-700"><Icon n="plus" s={14} /> Oportunidad</button>
+          </div>
+        </div>
+        <div className="flex gap-3 overflow-x-auto pb-3">
+          {STAGES.map((stage) => {
+            const items = data.opportunities.filter((o) => o.etapa === stage.id);
+            const total = items.reduce((s, o) => s + (o.valor || 0), 0);
+            return (
+              <div key={stage.id} onDragOver={(e) => { e.preventDefault(); setOver(stage.id); }} onDragLeave={() => setOver(null)} onDrop={() => onDrop(stage.id)}
+                className={"flex w-64 flex-shrink-0 flex-col rounded-xl border p-2 transition-colors " + (over === stage.id ? "border-emerald-300 bg-emerald-50/50" : "border-slate-200 bg-slate-100/60")}>
+                <div className="mb-2 flex items-center gap-2 px-1.5 pt-1">
+                  <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: stage.color }} />
+                  <span className="text-xs font-semibold text-slate-700">{stage.label}</span>
+                  <span className="tnum ml-auto rounded-full bg-white px-1.5 py-0.5 text-[10px] font-medium text-slate-400">{items.length}</span>
+                </div>
+                <p className="tnum mb-2 px-1.5 text-[11px] font-medium text-slate-400">{fmtMXN(total)}</p>
+                <div className="flex flex-col gap-2">
+                  {items.map((o) => {
+                    const t = typeOf(o.tipo);
+                    return (
+                      <div key={o.id} draggable onDragStart={() => setDragId(o.id)} onDragEnd={() => { setDragId(null); setOver(null); }} onClick={() => setEditing(o)}
+                        className={"group cursor-pointer rounded-lg border border-slate-200 bg-white p-2.5 shadow-sm transition-all hover:shadow-md " + (dragId === o.id ? "opacity-40" : "")}>
+                        <div className="flex items-start gap-1"><Icon n="grip" s={13} className="mt-0.5 flex-shrink-0 text-slate-300" /><p className="flex-1 text-sm font-medium leading-tight text-slate-800">{o.nombre}</p></div>
+                        <p className="mt-1 pl-4 text-xs text-slate-500">{o.empresa}</p>
+                        <div className="mt-2 flex items-center justify-between pl-4"><span className="tnum text-xs font-semibold text-slate-700">{fmtMXN(o.valor)}</span><Badge color={t.color} bg={t.bg}>{t.label.split(" ")[0]}</Badge></div>
+                      </div>
+                    );
+                  })}
+                  {items.length === 0 && <div className="rounded-lg border border-dashed border-slate-200 py-3 text-center text-[11px] text-slate-300">Vacío</div>}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+        {editing && <OppModal opp={editing} contacts={data.contacts} onClose={() => setEditing(null)} onSave={(o) => { upsert("opportunities", o); setEditing(null); }} onDelete={(id) => { remove("opportunities", id); setEditing(null); }} />}
+      </div>
+    );
+  }
+
+  function OppModal({ opp, contacts = [], onClose, onSave, onDelete }) {
+    const [f, setF] = useState({ ...opp });
+    const set = (k, v) => setF((p) => ({ ...p, [k]: v }));
+    const onContacto = (v) => {
+      setF((p) => {
+        const match = contacts.find((c) => (c.nombre || "").toLowerCase() === v.toLowerCase());
+        if (match) return { ...p, contacto: v, empresa: match.empresa || p.empresa, tipo: match.tipo || p.tipo };
+        return { ...p, contacto: v };
+      });
+    };
+    const save = () => { if (!f.nombre.trim()) return; onSave({ ...f, id: f.id || uid(), valor: Number(f.valor) || 0 }); };
+    return (
+      <Modal title={opp.id ? "Editar oportunidad" : "Nueva oportunidad"} onClose={onClose}>
+        <div className="space-y-3">
+          <Field label="Nombre del proyecto *"><input className={inputCls} value={f.nombre} onChange={(e) => set("nombre", e.target.value)} placeholder="Ej. Reacondicionamiento piso 4" autoFocus /></Field>
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="Empresa"><input className={inputCls} value={f.empresa} onChange={(e) => set("empresa", e.target.value)} /></Field>
+            <Field label="Contacto">
+              <input className={inputCls} value={f.contacto} onChange={(e) => onContacto(e.target.value)} list="contactos-existentes" placeholder="Escribe o elige…" autoComplete="off" />
+              <datalist id="contactos-existentes">
+                {contacts.map((c) => <option key={c.id} value={c.nombre}>{c.empresa ? c.empresa : ""}</option>)}
+              </datalist>
+            </Field>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="Tipo de cliente"><select className={inputCls} value={f.tipo} onChange={(e) => set("tipo", e.target.value)}>{CLIENT_TYPES.map((t) => <option key={t.id} value={t.id}>{t.label}</option>)}</select></Field>
+            <Field label="Valor estimado (MXN)"><input type="number" className={inputCls} value={f.valor} onChange={(e) => set("valor", e.target.value)} placeholder="0" /></Field>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="Etapa"><select className={inputCls} value={f.etapa} onChange={(e) => set("etapa", e.target.value)}>{STAGES.map((s) => <option key={s.id} value={s.id}>{s.label} · {s.prob}%</option>)}</select></Field>
+            <Field label="Cierre estimado"><input type="date" className={inputCls} value={f.cierre} onChange={(e) => set("cierre", e.target.value)} /></Field>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="Origen del lead"><select className={inputCls} value={f.origen || ""} onChange={(e) => set("origen", e.target.value)}><option value="">— Sin especificar —</option>{ORIGINS.map((o) => <option key={o.id} value={o.id}>{o.label}</option>)}</select></Field>
+            <Field label="Responsable"><input className={inputCls} value={f.responsable} onChange={(e) => set("responsable", e.target.value)} placeholder="Quién lleva la cuenta" /></Field>
+          </div>
+          <Field label="Notas"><textarea rows={2} className={inputCls} value={f.notas} onChange={(e) => set("notas", e.target.value)} /></Field>
+          <div className="flex items-center justify-between pt-1">
+            {opp.id ? <button onClick={() => onDelete(opp.id)} className="flex items-center gap-1.5 rounded-lg px-3 py-2 text-sm font-medium text-red-600 hover:bg-red-50"><Icon n="trash" s={14} /> Eliminar</button> : <span />}
+            <div className="flex gap-2">
+              <button onClick={onClose} className="rounded-lg px-4 py-2 text-sm font-medium text-slate-500 hover:bg-slate-100">Cancelar</button>
+              <button onClick={save} className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-700">Guardar</button>
+            </div>
+          </div>
+        </div>
+      </Modal>
+    );
+  }
+
+  /* ----------------------------------------------------------------- */
+  /*  Contactos                                                        */
+  /* ----------------------------------------------------------------- */
+  function Contacts({ data, upsert, remove, search, setSearch }) {
+    const [editing, setEditing] = useState(null);
+    const empty = { id: null, empresa: "", nombre: "", puesto: "", email: "", telefono: "", tipo: "privada", notas: "" };
+    const filtered = data.contacts.filter((c) => (c.nombre + " " + c.empresa + " " + c.email).toLowerCase().includes(search.toLowerCase()));
+    return (
+      <div className="space-y-4">
+        <div className="flex items-center justify-between gap-3">
+          <div className="relative max-w-xs flex-1">
+            <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"><Icon n="search" s={15} /></span>
+            <input className={inputCls + " pl-9"} placeholder="Buscar contacto…" value={search} onChange={(e) => setSearch(e.target.value)} />
+          </div>
+          <button onClick={() => setEditing(empty)} className="flex items-center gap-1.5 rounded-lg bg-emerald-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-emerald-700"><Icon n="plus" s={14} /> Contacto</button>
+        </div>
+        {filtered.length === 0 ? <div className="rounded-2xl border border-dashed border-slate-200 py-16 text-center text-sm text-slate-400">Sin contactos. Agrega el primero.</div> : (
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+            {filtered.map((c) => {
+              const t = typeOf(c.tipo);
+              return (
+                <div key={c.id} onClick={() => setEditing(c)} className="group cursor-pointer rounded-2xl border border-slate-200 bg-white p-4 transition-all hover:shadow-md">
+                  <div className="flex items-start justify-between">
+                    <div className="flex h-9 w-9 items-center justify-center rounded-full text-sm font-semibold" style={{ backgroundColor: t.bg, color: t.color }}>{(c.nombre || "?").slice(0, 1).toUpperCase()}</div>
+                    <Badge color={t.color} bg={t.bg}>{t.label.split(" ")[0]}</Badge>
+                  </div>
+                  <p className="mt-3 text-sm font-semibold text-slate-800">{c.nombre || "Sin nombre"}</p>
+                  <p className="text-xs text-slate-500">{c.puesto}{c.puesto && c.empresa ? " · " : ""}{c.empresa}</p>
+                  <div className="mt-3 space-y-1 border-t border-slate-100 pt-3">
+                    {c.email && <p className="flex items-center gap-1.5 text-xs text-slate-500"><Icon n="mail" s={12} /> {c.email}</p>}
+                    {c.telefono && <p className="flex items-center gap-1.5 text-xs text-slate-500"><Icon n="phone" s={12} /> {c.telefono}</p>}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+        {editing && <ContactModal c={editing} onClose={() => setEditing(null)} onSave={(x) => { upsert("contacts", x); setEditing(null); }} onDelete={(id) => { remove("contacts", id); setEditing(null); }} />}
+      </div>
+    );
+  }
+  function ContactModal({ c, onClose, onSave, onDelete }) {
+    const [f, setF] = useState({ ...c });
+    const set = (k, v) => setF((p) => ({ ...p, [k]: v }));
+    return (
+      <Modal title={c.id ? "Editar contacto" : "Nuevo contacto"} onClose={onClose}>
+        <div className="space-y-3">
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="Nombre *"><input className={inputCls} value={f.nombre} onChange={(e) => set("nombre", e.target.value)} autoFocus /></Field>
+            <Field label="Puesto"><input className={inputCls} value={f.puesto} onChange={(e) => set("puesto", e.target.value)} /></Field>
+          </div>
+          <Field label="Empresa"><input className={inputCls} value={f.empresa} onChange={(e) => set("empresa", e.target.value)} /></Field>
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="Email"><input className={inputCls} value={f.email} onChange={(e) => set("email", e.target.value)} /></Field>
+            <Field label="Teléfono"><input className={inputCls} value={f.telefono} onChange={(e) => set("telefono", e.target.value)} /></Field>
+          </div>
+          <Field label="Tipo de cliente"><select className={inputCls} value={f.tipo} onChange={(e) => set("tipo", e.target.value)}>{CLIENT_TYPES.map((t) => <option key={t.id} value={t.id}>{t.label}</option>)}</select></Field>
+          <Field label="Notas"><textarea rows={2} className={inputCls} value={f.notas} onChange={(e) => set("notas", e.target.value)} /></Field>
+          <div className="flex items-center justify-between pt-1">
+            {c.id ? <button onClick={() => onDelete(c.id)} className="flex items-center gap-1.5 rounded-lg px-3 py-2 text-sm font-medium text-red-600 hover:bg-red-50"><Icon n="trash" s={14} /> Eliminar</button> : <span />}
+            <div className="flex gap-2">
+              <button onClick={onClose} className="rounded-lg px-4 py-2 text-sm font-medium text-slate-500 hover:bg-slate-100">Cancelar</button>
+              <button onClick={() => f.nombre.trim() && onSave({ ...f, id: f.id || uid() })} className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-700">Guardar</button>
+            </div>
+          </div>
+        </div>
+      </Modal>
+    );
+  }
+
+  /* ----------------------------------------------------------------- */
+  /*  Tareas                                                           */
+  /* ----------------------------------------------------------------- */
+  function Tasks({ data, upsert, remove }) {
+    const [editing, setEditing] = useState(null);
+    const empty = { id: null, titulo: "", vinculo: "", fecha: todayISO(), hecha: false, responsable: "", prioridad: "media" };
+    const toggle = (t) => upsert("tasks", { ...t, hecha: !t.hecha });
+    const pendientes = data.tasks.filter((t) => !t.hecha).sort((a, b) => (a.fecha || "").localeCompare(b.fecha || ""));
+    const hechas = data.tasks.filter((t) => t.hecha);
+    const Row = ({ t }) => {
+      const p = PRIORITIES.find((x) => x.id === t.prioridad) || PRIORITIES[1];
+      const vencida = !t.hecha && t.fecha < todayISO();
+      return (
+        <div className="flex items-center gap-3 rounded-xl border border-slate-200 bg-white px-4 py-3">
+          <button onClick={() => toggle(t)} className="flex-shrink-0 text-slate-300 hover:text-emerald-400">{t.hecha ? <Icon n="circleCheck" s={20} className="text-emerald-500" /> : <Icon n="circle" s={20} />}</button>
+          <div className="min-w-0 flex-1 cursor-pointer" onClick={() => setEditing(t)}>
+            <p className={"text-sm font-medium " + (t.hecha ? "text-slate-400 line-through" : "text-slate-800")}>{t.titulo}</p>
+            <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-slate-400">
+              {t.vinculo && <span className="flex items-center gap-1"><Icon n="building" s={11} />{t.vinculo}</span>}
+              {t.responsable && <span>· {t.responsable}</span>}
+              <span className={"flex items-center gap-1 " + (vencida ? "font-semibold text-red-500" : "")}><Icon n="cal" s={11} />{fmtDate(t.fecha)}</span>
+            </div>
+          </div>
+          {!t.hecha && <span className="h-2 w-2 flex-shrink-0 rounded-full" style={{ backgroundColor: p.color }} title={"Prioridad " + p.label} />}
+          <button onClick={() => remove("tasks", t.id)} className="flex-shrink-0 text-slate-300 hover:text-red-500"><Icon n="trash" s={15} /></button>
+        </div>
+      );
+    };
+    return (
+      <div className="space-y-4">
+        <div className="flex items-center justify-between">
+          <p className="text-sm text-slate-500"><span className="font-semibold text-slate-700">{pendientes.length}</span> pendientes · <span className="text-slate-400">{hechas.length} completadas</span></p>
+          <button onClick={() => setEditing(empty)} className="flex items-center gap-1.5 rounded-lg bg-emerald-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-emerald-700"><Icon n="plus" s={14} /> Tarea</button>
+        </div>
+        {pendientes.length === 0 && hechas.length === 0 ? <div className="rounded-2xl border border-dashed border-slate-200 py-16 text-center text-sm text-slate-400">Sin tareas. Agrega un seguimiento.</div> : (
+          <div className="space-y-2">
+            {pendientes.map((t) => <Row key={t.id} t={t} />)}
+            {hechas.length > 0 && <p className="px-1 pt-3 text-xs font-semibold uppercase tracking-wide text-slate-400">Completadas</p>}
+            {hechas.map((t) => <Row key={t.id} t={t} />)}
+          </div>
+        )}
+        {editing && <TaskModal t={editing} onClose={() => setEditing(null)} onSave={(x) => { upsert("tasks", x); setEditing(null); }} />}
+      </div>
+    );
+  }
+  function TaskModal({ t, onClose, onSave }) {
+    const [f, setF] = useState({ ...t });
+    const set = (k, v) => setF((p) => ({ ...p, [k]: v }));
+    return (
+      <Modal title={t.id ? "Editar tarea" : "Nueva tarea"} onClose={onClose}>
+        <div className="space-y-3">
+          <Field label="Tarea / seguimiento *"><input className={inputCls} value={f.titulo} onChange={(e) => set("titulo", e.target.value)} placeholder="Ej. Llamar para confirmar propuesta" autoFocus /></Field>
+          <Field label="Vinculado a (empresa / oportunidad)"><input className={inputCls} value={f.vinculo} onChange={(e) => set("vinculo", e.target.value)} /></Field>
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="Fecha límite"><input type="date" className={inputCls} value={f.fecha} onChange={(e) => set("fecha", e.target.value)} /></Field>
+            <Field label="Prioridad"><select className={inputCls} value={f.prioridad} onChange={(e) => set("prioridad", e.target.value)}>{PRIORITIES.map((p) => <option key={p.id} value={p.id}>{p.label}</option>)}</select></Field>
+          </div>
+          <Field label="Responsable"><input className={inputCls} value={f.responsable} onChange={(e) => set("responsable", e.target.value)} /></Field>
+          <div className="flex justify-end gap-2 pt-1">
+            <button onClick={onClose} className="rounded-lg px-4 py-2 text-sm font-medium text-slate-500 hover:bg-slate-100">Cancelar</button>
+            <button onClick={() => f.titulo.trim() && onSave({ ...f, id: f.id || uid() })} className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-700">Guardar</button>
+          </div>
+        </div>
+      </Modal>
+    );
+  }
+
+  /* ----------------------------------------------------------------- */
+  /*  Calendario (vista-resumen, solo lectura)                         */
+  /* ----------------------------------------------------------------- */
+  function CalendarView({ data }) {
+    const [ref, setRef] = useState(() => { const d = new Date(); return { y: d.getFullYear(), m: d.getMonth() }; });
+    const monthName = new Date(ref.y, ref.m, 1).toLocaleDateString("es-MX", { month: "long", year: "numeric" });
+    const first = new Date(ref.y, ref.m, 1);
+    const startDow = (first.getDay() + 6) % 7; // lunes = 0
+    const daysInMonth = new Date(ref.y, ref.m + 1, 0).getDate();
+    const cells = [];
+    for (let i = 0; i < startDow; i++) cells.push(null);
+    for (let d = 1; d <= daysInMonth; d++) cells.push(d);
+
+    const events = useMemo(() => {
+      const map = {};
+      const add = (iso, ev) => { if (!iso) return; (map[iso] = map[iso] || []).push(ev); };
+      data.tasks.forEach((t) => add(t.fecha, { type: "tarea", label: t.titulo, color: t.hecha ? "#94a3b8" : "#0d9488" }));
+      data.opportunities.filter((o) => o.etapa !== "perdida").forEach((o) => add(o.cierre, { type: "cierre", label: o.nombre + " · " + fmtMXN(o.valor), color: stageOf(o.etapa).color }));
+      return map;
+    }, [data]);
+
+    const iso = (d) => ref.y + "-" + String(ref.m + 1).padStart(2, "0") + "-" + String(d).padStart(2, "0");
+    const move = (dir) => setRef((r) => { let m = r.m + dir, y = r.y; if (m < 0) { m = 11; y--; } if (m > 11) { m = 0; y++; } return { y, m }; });
+    const dows = ["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom"];
+
+    return (
+      <div className="space-y-4">
+        <div className="flex items-center justify-between">
+          <h2 className="text-base font-semibold capitalize text-slate-800">{monthName}</h2>
+          <div className="flex items-center gap-2">
+            <button onClick={() => setRef(() => { const d = new Date(); return { y: d.getFullYear(), m: d.getMonth() }; })} className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50">Hoy</button>
+            <button onClick={() => move(-1)} className="rounded-lg border border-slate-200 bg-white p-1.5 text-slate-500 hover:bg-slate-50"><Icon n="chevL" s={16} /></button>
+            <button onClick={() => move(1)} className="rounded-lg border border-slate-200 bg-white p-1.5 text-slate-500 hover:bg-slate-50"><Icon n="chevR" s={16} /></button>
+          </div>
+        </div>
+        <div className="flex items-center gap-4 text-xs text-slate-500">
+          <span className="flex items-center gap-1.5"><span className="h-2.5 w-2.5 rounded-full bg-teal-600" /> Tareas / seguimientos</span>
+          <span className="flex items-center gap-1.5"><span className="h-2.5 w-2.5 rounded-full bg-violet-500" /> Cierres estimados</span>
+        </div>
+        <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white">
+          <div className="grid grid-cols-7 border-b border-slate-100 bg-slate-50">
+            {dows.map((d) => <div key={d} className="py-2 text-center text-xs font-semibold text-slate-400">{d}</div>)}
+          </div>
+          <div className="grid grid-cols-7">
+            {cells.map((d, i) => {
+              const dayISO = d ? iso(d) : null;
+              const evs = d ? (events[dayISO] || []) : [];
+              const isToday = dayISO === todayISO();
+              return (
+                <div key={i} className={"min-h-[92px] border-b border-r border-slate-100 p-1.5 " + (d ? "" : "bg-slate-50/50")}>
+                  {d && <div className={"mb-1 flex h-5 w-5 items-center justify-center rounded-full text-xs " + (isToday ? "bg-emerald-600 font-semibold text-white" : "text-slate-400")}>{d}</div>}
+                  <div className="space-y-1">
+                    {evs.slice(0, 3).map((e, j) => (
+                      <div key={j} className="truncate rounded px-1 py-0.5 text-[10px] font-medium text-white" style={{ backgroundColor: e.color }} title={e.label}>{e.label}</div>
+                    ))}
+                    {evs.length > 3 && <div className="px-1 text-[10px] text-slate-400">+{evs.length - 3} más</div>}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+  </script>
+</body>
+</html>
