@@ -260,7 +260,6 @@
       setData((d) => ({ ...d, [key]: d[key].filter((x) => x.id !== id) }));
       try { await db.remove(key, id); } catch (e) { console.error(e); reload(); }
     };
-    const resetAll = async () => { if (window.confirm("¿Borrar todos los datos? Esta acción no se puede deshacer.")) { setData({ opportunities: [], contacts: [], tasks: [] }); try { await db.wipe(); } catch (e) { console.error(e); } } };
 
     if (checking) return <Splash text="Verificando sesión…" />;
     if (!authed) return <Login onIn={reload} />;
@@ -287,7 +286,6 @@
             </div>
             <div className="flex items-center gap-1">
               <button onClick={reload} title="Actualizar" className="rounded-lg p-2 text-slate-400 hover:bg-slate-100 hover:text-slate-600"><Icon n="refresh" s={15} /></button>
-              <button onClick={resetAll} className="flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs text-slate-400 hover:bg-slate-100 hover:text-slate-600"><Icon n="rotate" s={13} /> Reiniciar</button>
               {CLOUD && <button onClick={() => supa.auth.signOut()} className="flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs text-slate-400 hover:bg-slate-100 hover:text-slate-600"><Icon n="logout" s={13} /> Salir</button>}
             </div>
           </div>
