@@ -64,6 +64,15 @@
     { id: "evento",     label: "Evento / networking" },
     { id: "otro",       label: "Otro" },
   ];
+  // Plantilla de seguimiento: se generan como tareas al aplicarla a una oportunidad.
+  const PLANTILLA_SEGUIMIENTO = [
+    { dias: 1, titulo: "Confirmar recepción y agendar diagnóstico", prioridad: "alta" },
+    { dias: 2, titulo: "Seguimiento: dudas sobre la propuesta",     prioridad: "alta" },
+    { dias: 3, titulo: "Seguimiento: dudas sobre la propuesta",     prioridad: "alta" },
+    { dias: 5, titulo: "Tocar base / reforzar valor",               prioridad: "media" },
+    { dias: 7, titulo: "Reactivar negociación",                     prioridad: "media" },
+  ];
+  const fechaMas = (dias) => { const d = new Date(); d.setDate(d.getDate() + dias); return d.toISOString().slice(0, 10); };
 
   const fmtMXN = (n) => new Intl.NumberFormat("es-MX", { style: "currency", currency: "MXN", maximumFractionDigits: 0 }).format(n || 0);
   const fmtDate = (d) => (d ? new Date(d + "T00:00:00").toLocaleDateString("es-MX", { day: "2-digit", month: "short", year: "numeric" }) : "—");
@@ -506,13 +515,32 @@
             );
           })}
         </div>
-        {editing && <OppModal opp={editing} contacts={data.contacts} onClose={() => setEditing(null)} onSave={(o) => { upsert("opportunities", o); setEditing(null); }} onDelete={(id) => { remove("opportunities", id); setEditing(null); }} />}
+        {editing && <OppModal
+          opp={editing}
+          contacts={data.contacts}
+          tasks={data.tasks}
+          onClose={() => setEditing(null)}
+          onSaveTask={(t) => upsert("tasks", t)}
+          onDeleteTask={(id) => remove("tasks", id)}
+          onSave={(o, plantilla) => {
+            upsert("opportunities", o);
+            if (plantilla) {
+              PLANTILLA_SEGUIMIENTO.forEach((p) => {
+                upsert("tasks", { id: uid(), titulo: p.titulo, vinculo: o.empresa || o.nombre, oppId: o.id, fecha: fechaMas(p.dias), hecha: false, responsable: o.responsable || "", prioridad: p.prioridad });
+              });
+            }
+            setEditing(null);
+          }}
+          onDelete={(id) => { remove("opportunities", id); setEditing(null); }} />}
       </div>
     );
   }
 
-  function OppModal({ opp, contacts = [], onClose, onSave, onDelete }) {
+  function OppModal({ opp, contacts = [], tasks = [], onClose, onSave, onSaveTask, onDeleteTask, onDelete }) {
     const [f, setF] = useState({ ...opp });
+    const [aplicarPlantilla, setAplicarPlantilla] = useState(false);
+    const [nuevaTarea, setNuevaTarea] = useState({ titulo: "", fecha: todayISO(), prioridad: "media" });
+    const oppId = opp.id;
     const set = (k, v) => setF((p) => ({ ...p, [k]: v }));
     const onContacto = (v) => {
       setF((p) => {
@@ -521,7 +549,13 @@
         return { ...p, contacto: v };
       });
     };
-    const save = () => { if (!f.nombre.trim()) return; onSave({ ...f, id: f.id || uid(), valor: Number(f.valor) || 0 }); };
+    const save = () => { if (!f.nombre.trim()) return; onSave({ ...f, id: f.id || uid(), valor: Number(f.valor) || 0 }, aplicarPlantilla); };
+    const seguimientos = tasks.filter((t) => t.oppId && t.oppId === oppId).sort((a, b) => (a.fecha || "").localeCompare(b.fecha || ""));
+    const agregarSeguimiento = () => {
+      if (!nuevaTarea.titulo.trim()) return;
+      onSaveTask({ id: uid(), titulo: nuevaTarea.titulo, vinculo: f.empresa || f.nombre, oppId, fecha: nuevaTarea.fecha, hecha: false, responsable: f.responsable || "", prioridad: nuevaTarea.prioridad });
+      setNuevaTarea({ titulo: "", fecha: todayISO(), prioridad: "media" });
+    };
     return (
       <Modal title={opp.id ? "Editar oportunidad" : "Nueva oportunidad"} onClose={onClose}>
         <div className="space-y-3">
@@ -548,6 +582,49 @@
             <Field label="Responsable"><input className={inputCls} value={f.responsable} onChange={(e) => set("responsable", e.target.value)} placeholder="Quién lleva la cuenta" /></Field>
           </div>
           <Field label="Notas"><textarea rows={2} className={inputCls} value={f.notas} onChange={(e) => set("notas", e.target.value)} /></Field>
+
+          {!opp.id && (
+            <label className="flex cursor-pointer items-start gap-2 rounded-lg border border-emerald-200 bg-emerald-50/50 p-3">
+              <input type="checkbox" className="mt-0.5 h-4 w-4 accent-emerald-600" checked={aplicarPlantilla} onChange={(e) => setAplicarPlantilla(e.target.checked)} />
+              <span className="text-sm text-slate-700">
+                <span className="font-medium">Aplicar plantilla de seguimiento</span>
+                <span className="block text-xs text-slate-500">Genera {PLANTILLA_SEGUIMIENTO.length} recordatorios automáticos (días {PLANTILLA_SEGUIMIENTO.map((p) => p.dias).join(", ")}) en Tareas y Calendario.</span>
+              </span>
+            </label>
+          )}
+
+          {opp.id && (
+            <div className="rounded-lg border border-slate-200 bg-slate-50/60 p-3">
+              <div className="mb-2 flex items-center gap-2">
+                <Icon n="check" s={14} className="text-slate-500" />
+                <span className="text-sm font-semibold text-slate-700">Trayecto de seguimiento</span>
+                <span className="tnum ml-auto rounded-full bg-white px-1.5 py-0.5 text-[10px] font-medium text-slate-400">{seguimientos.length}</span>
+              </div>
+              {seguimientos.length > 0 && (
+                <ul className="mb-2 space-y-1">
+                  {seguimientos.map((t) => {
+                    const p = PRIORITIES.find((x) => x.id === t.prioridad) || PRIORITIES[1];
+                    const vencida = !t.hecha && t.fecha < todayISO();
+                    return (
+                      <li key={t.id} className="flex items-center gap-2 rounded-md bg-white px-2 py-1.5 text-xs">
+                        <button onClick={() => onSaveTask({ ...t, hecha: !t.hecha })} className="flex-shrink-0">{t.hecha ? <Icon n="circleCheck" s={15} className="text-emerald-500" /> : <Icon n="circle" s={15} className="text-slate-300 hover:text-emerald-400" />}</button>
+                        <span className={"flex-1 " + (t.hecha ? "text-slate-400 line-through" : "text-slate-700")}>{t.titulo}</span>
+                        <span className={vencida ? "font-semibold text-red-500" : "text-slate-400"}>{fmtDate(t.fecha)}</span>
+                        <span className="h-1.5 w-1.5 flex-shrink-0 rounded-full" style={{ backgroundColor: p.color }} />
+                        <button onClick={() => onDeleteTask(t.id)} className="flex-shrink-0 text-slate-300 hover:text-red-500"><Icon n="trash" s={12} /></button>
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+              <div className="flex items-end gap-2">
+                <div className="flex-1"><input className={inputCls + " text-sm"} value={nuevaTarea.titulo} onChange={(e) => setNuevaTarea((p) => ({ ...p, titulo: e.target.value }))} placeholder="Agregar seguimiento suelto…" onKeyDown={(e) => e.key === "Enter" && agregarSeguimiento()} /></div>
+                <input type="date" className={inputCls + " w-36 text-sm"} value={nuevaTarea.fecha} onChange={(e) => setNuevaTarea((p) => ({ ...p, fecha: e.target.value }))} />
+                <button onClick={agregarSeguimiento} className="flex-shrink-0 rounded-lg bg-slate-700 px-3 py-2 text-sm font-medium text-white hover:bg-slate-800"><Icon n="plus" s={14} /></button>
+              </div>
+            </div>
+          )}
+
           <div className="flex items-center justify-between pt-1">
             {opp.id ? <button onClick={() => onDelete(opp.id)} className="flex items-center gap-1.5 rounded-lg px-3 py-2 text-sm font-medium text-red-600 hover:bg-red-50"><Icon n="trash" s={14} /> Eliminar</button> : <span />}
             <div className="flex gap-2">
