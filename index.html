@@ -411,25 +411,6 @@
           ))}
         </div>
 
-        {/* KPI compacto: Tasa de Conversión Histórico */}
-        <div className="rounded-2xl border border-slate-200 bg-white p-4">
-          <div className="mb-3 flex items-center gap-2">
-            <Icon n="trending" s={14} style={{ color: BRAND.teal }} />
-            <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-500">Tasa de Conversión · Histórico</h3>
-            <span className="ml-auto text-[10px] text-slate-300">acumulado desde el inicio del registro</span>
-          </div>
-          <div className="grid grid-cols-2 gap-2 lg:grid-cols-4">
-            {m.tramosPct.map((t) => (
-              <div key={t.key} className="rounded-xl border border-slate-100 bg-slate-50/60 px-3 py-2.5">
-                <p className="text-[11px] font-medium text-slate-500">{t.label}</p>
-                <p className="tnum mt-1 text-2xl font-bold tracking-tight" style={{ color: t.pct == null ? "#cbd5e1" : BRAND.navy }}>{t.pct == null ? "—" : t.pct + "%"}</p>
-                <p className="tnum mt-0.5 text-[10px] text-slate-400">{t.ganados} avanzó{t.perdidos ? " · " + t.perdidos + " cayó" : ""}</p>
-              </div>
-            ))}
-          </div>
-          <p className="mt-2 text-[10px] leading-relaxed text-slate-400">Dato histórico: cuenta solo movimientos generados por acción dentro del CRM. Una tarjeta creada directo en una etapa no suma al tramo previo.</p>
-        </div>
-
         <div className="grid gap-4 lg:grid-cols-5">
           {/* Embudo actual (foto del momento, distinto del histórico) */}
           <div className="rounded-2xl border border-slate-200 bg-white p-5 lg:col-span-3">
@@ -470,6 +451,25 @@
         <div className="grid gap-4 md:grid-cols-2">
           <TaskAlert title="Seguimientos vencidos" tasks={tareasVencidas} tone="red" />
           <TaskAlert title="Vencen hoy" tasks={tareasHoy} tone="amber" />
+        </div>
+
+        {/* KPI compacto: Tasa de Conversión Histórico (al fondo) */}
+        <div className="rounded-2xl border border-slate-200 bg-white p-4">
+          <div className="mb-3 flex items-center gap-2">
+            <Icon n="trending" s={14} style={{ color: BRAND.teal }} />
+            <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-500">Tasa de Conversión · Histórico</h3>
+            <span className="ml-auto text-[10px] text-slate-300">acumulado desde el inicio del registro</span>
+          </div>
+          <div className="grid grid-cols-2 gap-2 lg:grid-cols-4">
+            {m.tramosPct.map((t) => (
+              <div key={t.key} className="rounded-xl border border-slate-100 bg-slate-50/60 px-3 py-2.5">
+                <p className="text-[11px] font-medium text-slate-500">{t.label}</p>
+                <p className="tnum mt-1 text-2xl font-bold tracking-tight" style={{ color: t.pct == null ? "#cbd5e1" : BRAND.navy }}>{t.pct == null ? "—" : t.pct + "%"}</p>
+                <p className="tnum mt-0.5 text-[10px] text-slate-400">{t.ganados} avanzó{t.perdidos ? " · " + t.perdidos + " cayó" : ""}</p>
+              </div>
+            ))}
+          </div>
+          <p className="mt-2 text-[10px] leading-relaxed text-slate-400">Dato histórico: cuenta solo movimientos generados por acción dentro del CRM. Una tarjeta creada directo en una etapa no suma al tramo previo.</p>
         </div>
       </div>
     );
