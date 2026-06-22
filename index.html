@@ -38,15 +38,16 @@
   /* ----------------------------------------------------------------- */
   /*  Configuración base                                               */
   /* ----------------------------------------------------------------- */
+  // Embudo de 4 etapas. "peso" = ponderación para el pronóstico realista del pipeline.
+  // La acción-llave es el botón que avanza a la siguiente etapa.
   const STAGES = [
-    { id: "nuevo",       label: "Nuevo",             prob: 10,  color: "#64748b" },
-    { id: "calificado",  label: "Calificado",        prob: 25,  color: "#0ea5e9" },
-    { id: "diagnostico", label: "Diagnóstico",       prob: 45,  color: "#6366f1" },
-    { id: "propuesta",   label: "Propuesta enviada", prob: 65,  color: "#8b5cf6" },
-    { id: "negociacion", label: "Negociación",       prob: 80,  color: "#f59e0b" },
-    { id: "ganada",      label: "Ganada",            prob: 100, color: "#10b981" },
-    { id: "perdida",     label: "Perdida",           prob: 0,   color: "#ef4444" },
+    { id: "prospecto",   label: "Prospecto",   peso: 0,   color: "#64748b", accion: "Calificar",   siguiente: "oportunidad" },
+    { id: "oportunidad", label: "Oportunidad", peso: 35,  color: "#1B3A6B", accion: "Cotizar",      siguiente: "negociacion" },
+    { id: "negociacion", label: "Negociación", peso: 70,  color: "#D95F1A", accion: "Cerrar (ganada)", siguiente: "cierre" },
+    { id: "cierre",      label: "Cierre",      peso: 100, color: "#0A7E6B", accion: null,           siguiente: null },
   ];
+  // Paleta de marca Anabasis (acentos en datos funcionales).
+  const BRAND = { teal: "#0A7E6B", navy: "#1B3A6B", orange: "#D95F1A", dark: "#0F1923" };
   const CLIENT_TYPES = [
     { id: "privada",       label: "Privada / Corporativo", color: "#0d9488", bg: "#ccfbf1" },
     { id: "desarrollador", label: "Desarrollador inmob.",  color: "#7c3aed", bg: "#ede9fe" },
@@ -73,13 +74,15 @@
     { dias: 5, titulo: "Tocar base / reforzar valor",               prioridad: "media" },
     { dias: 7, titulo: "Reactivar negociación",                     prioridad: "media" },
   ];
-  const fechaMas = (dias) => { const d = new Date(); d.setDate(d.getDate() + dias); return d.toISOString().slice(0, 10); };
 
   const fmtMXN = (n) => new Intl.NumberFormat("es-MX", { style: "currency", currency: "MXN", maximumFractionDigits: 0 }).format(n || 0);
   const fmtDate = (d) => (d ? new Date(d + "T00:00:00").toLocaleDateString("es-MX", { day: "2-digit", month: "short", year: "numeric" }) : "—");
   const todayISO = () => new Date().toISOString().slice(0, 10);
   const uid = () => (crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(36) + Math.random().toString(36).slice(2));
   const stageOf = (id) => STAGES.find((s) => s.id === id) || STAGES[0];
+  const stageIdx = (id) => STAGES.findIndex((s) => s.id === id);
+  // Pronóstico ponderado de una oportunidad según su etapa.
+  const ponderado = (o) => (o.valor || 0) * (stageOf(o.etapa).peso / 100);
   const typeOf = (id) => CLIENT_TYPES.find((t) => t.id === id) || CLIENT_TYPES[0];
   const originOf = (id) => ORIGINS.find((o) => o.id === id);
 
@@ -114,6 +117,12 @@
     refresh: "M23 4v6h-6M1 20v-6h6M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15",
     chevR: "M9 18l6-6-6-6",
     chevL: "M15 18l-6-6 6-6",
+    database: "M12 8c4.97 0 9-1.34 9-3s-4.03-3-9-3-9 1.34-9 3 4.03 3 9 3zM3 5v14c0 1.66 4.03 3 9 3s9-1.34 9-3V5M3 12c0 1.66 4.03 3 9 3s9-1.34 9-3",
+    arrowR: "M5 12h14M13 6l6 6-6 6",
+    arrowD: "M12 5v14M6 13l6 6 6-6",
+    list: "M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01",
+    grid: "M3 3h7v7H3zM14 3h7v7h-7zM14 14h7v7h-7zM3 14h7v7H3z",
+    flag: "M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1zM4 22v-7",
   };
   const Icon = ({ n, s = 16, className = "", style }) => (
     <svg width={s} height={s} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className} style={style}>
@@ -126,10 +135,10 @@
   /* ----------------------------------------------------------------- */
   const CLOUD = !!(window.SUPABASE_URL && window.SUPABASE_ANON_KEY);
   const supa = CLOUD ? window.supabase.createClient(window.SUPABASE_URL, window.SUPABASE_ANON_KEY) : null;
-  const KIND = { opportunities: "opportunity", contacts: "contact", tasks: "task" };
+  const KIND = { opportunities: "opportunity", contacts: "contact", tasks: "task", movements: "movement" };
   const LS_KEY = "crm-data-v1";
 
-  const SEED = { opportunities: [], contacts: [], tasks: [] };
+  const SEED = { opportunities: [], contacts: [], tasks: [], movements: [] };
 
   const db = {
     async list() {
@@ -140,7 +149,7 @@
       }
       const { data, error } = await supa.from("records").select("id, kind, data");
       if (error) throw error;
-      const out = { opportunities: [], contacts: [], tasks: [] };
+      const out = { opportunities: [], contacts: [], tasks: [], movements: [] };
       for (const row of data) {
         const key = Object.keys(KIND).find((k) => KIND[k] === row.kind);
         if (key) out[key].push({ id: row.id, ...row.data });
@@ -149,7 +158,8 @@
     },
     async save(key, item) {
       if (!CLOUD) {
-        const all = JSON.parse(localStorage.getItem(LS_KEY) || JSON.stringify({ opportunities: [], contacts: [], tasks: [] }));
+        const all = JSON.parse(localStorage.getItem(LS_KEY) || JSON.stringify({ opportunities: [], contacts: [], tasks: [], movements: [] }));
+        all[key] = all[key] || [];
         const exists = all[key].some((x) => x.id === item.id);
         all[key] = exists ? all[key].map((x) => (x.id === item.id ? item : x)) : [item, ...all[key]];
         localStorage.setItem(LS_KEY, JSON.stringify(all));
@@ -170,7 +180,7 @@
       if (error) throw error;
     },
     async wipe() {
-      if (!CLOUD) { localStorage.setItem(LS_KEY, JSON.stringify({ opportunities: [], contacts: [], tasks: [] })); return; }
+      if (!CLOUD) { localStorage.setItem(LS_KEY, JSON.stringify({ opportunities: [], contacts: [], tasks: [], movements: [] })); return; }
       const { error } = await supa.from("records").delete().neq("id", "00000000-0000-0000-0000-000000000000");
       if (error) throw error;
     },
@@ -185,7 +195,7 @@
   const Field = ({ label, children }) => (
     <label className="block"><span className="mb-1 block text-xs font-medium text-slate-500">{label}</span>{children}</label>
   );
-  const inputCls = "w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-800 outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100";
+  const inputCls = "w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-800 outline-none focus:border-[#0A7E6B] focus:ring-2 focus:ring-[#0A7E6B]/15";
   const Modal = ({ title, onClose, children }) => (
     <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-slate-900/40 p-4 backdrop-blur-sm" onMouseDown={onClose}>
       <div className="mt-10 w-full max-w-lg rounded-2xl bg-white shadow-xl" onMouseDown={(e) => e.stopPropagation()}>
@@ -218,14 +228,14 @@
       <div className="flex min-h-screen items-center justify-center px-4">
         <div className="w-full max-w-sm rounded-2xl border border-slate-200 bg-white p-7 shadow-sm">
           <div className="mb-5 flex items-center gap-2.5">
-            <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-slate-900 text-sm font-bold text-white">C</div>
-            <div><h1 className="text-base font-bold leading-none text-slate-900">CRM Comercial</h1><p className="mt-1 text-xs text-slate-400">Acceso del equipo</p></div>
+            <div className="flex h-9 w-9 items-center justify-center rounded-lg text-sm font-bold text-white" style={{ backgroundColor: BRAND.dark }}>A</div>
+            <div><h1 className="text-base font-bold leading-none tracking-tight text-slate-900">CRM Anabasis</h1><p className="mt-1 text-xs text-slate-400">Acceso del equipo comercial</p></div>
           </div>
           <div className="space-y-3">
             <Field label="Correo"><input className={inputCls} type="email" value={email} onChange={(e) => setEmail(e.target.value)} onKeyDown={(e)=>e.key==="Enter"&&submit()} /></Field>
             <Field label="Contraseña"><input className={inputCls} type="password" value={pass} onChange={(e) => setPass(e.target.value)} onKeyDown={(e)=>e.key==="Enter"&&submit()} /></Field>
             {err && <p className="text-xs text-red-500">{err}</p>}
-            <button onClick={submit} disabled={busy} className="w-full rounded-lg bg-emerald-600 py-2 text-sm font-medium text-white hover:bg-emerald-700 disabled:opacity-50">{busy ? "Entrando…" : "Entrar"}</button>
+            <button onClick={submit} disabled={busy} className="w-full rounded-lg bg-[#0A7E6B] py-2 text-sm font-medium text-white hover:bg-[#096353] disabled:opacity-50">{busy ? "Entrando…" : "Entrar"}</button>
           </div>
         </div>
       </div>
@@ -238,9 +248,9 @@
   function App() {
     const [authed, setAuthed] = useState(!CLOUD);
     const [checking, setChecking] = useState(CLOUD);
-    const [data, setData] = useState({ opportunities: [], contacts: [], tasks: [] });
+    const [data, setData] = useState({ opportunities: [], contacts: [], tasks: [], movements: [] });
     const [loading, setLoading] = useState(true);
-    const [tab, setTab] = useState("dashboard");
+    const [tab, setTab] = useState("inicio");
     const [search, setSearch] = useState("");
 
     useEffect(() => {
@@ -270,17 +280,22 @@
       setData((d) => ({ ...d, [key]: d[key].filter((x) => x.id !== id) }));
       try { await db.remove(key, id); } catch (e) { console.error(e); reload(); }
     };
+    // Registra una transición de etapa. tipo: "avance" | "perdida" | "ganada".
+    const logMove = (opp, from, to, tipo, comentario) => {
+      upsert("movements", { id: uid(), oppId: opp.id, oppNombre: opp.nombre, empresa: opp.empresa || "", from, to, tipo, comentario: comentario || "", monto: opp.valor || 0, fecha: new Date().toISOString() });
+    };
 
     if (checking) return <Splash text="Verificando sesión…" />;
     if (!authed) return <Login onIn={reload} />;
     if (loading) return <Splash text="Cargando datos…" />;
 
     const tabs = [
-      { id: "dashboard", label: "Dashboard", n: "dashboard" },
-      { id: "pipeline",  label: "Pipeline",  n: "kanban" },
-      { id: "contactos", label: "Contactos", n: "users" },
-      { id: "tareas",    label: "Tareas",    n: "check" },
-      { id: "calendario",label: "Calendario",n: "cal" },
+      { id: "inicio",    label: "Inicio",       n: "dashboard" },
+      { id: "tablero",   label: "Tablero",      n: "kanban" },
+      { id: "basedatos", label: "Base de Datos",n: "database" },
+      { id: "leads",     label: "Leads",        n: "users" },
+      { id: "tareas",    label: "Tareas",       n: "check" },
+      { id: "calendario",label: "Calendario",   n: "cal" },
     ];
 
     return (
@@ -288,10 +303,10 @@
         <header className="border-b border-slate-200 bg-white">
           <div className="mx-auto flex max-w-7xl items-center justify-between px-5 py-3">
             <div className="flex items-center gap-2.5">
-              <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-slate-900 text-sm font-bold text-white">C</div>
+              <div className="flex h-8 w-8 items-center justify-center rounded-lg text-sm font-bold text-white" style={{ backgroundColor: BRAND.dark }}>A</div>
               <div>
-                <h1 className="text-sm font-bold leading-none text-slate-900">CRM Comercial</h1>
-                <p className="mt-0.5 text-[11px] text-slate-400">{CLOUD ? "Pipeline compartido del equipo" : "Modo local (este navegador)"}</p>
+                <h1 className="text-sm font-bold leading-none tracking-tight text-slate-900">Anabasis</h1>
+                <p className="mt-0.5 text-[11px] text-slate-400">{CLOUD ? "CRM · equipo comercial" : "Modo local (este navegador)"}</p>
               </div>
             </div>
             <div className="flex items-center gap-1">
@@ -303,7 +318,7 @@
             {tabs.map((t) => {
               const active = tab === t.id;
               return (
-                <button key={t.id} onClick={() => setTab(t.id)} className={"flex flex-shrink-0 items-center gap-2 border-b-2 px-3 py-2.5 text-sm font-medium transition-colors " + (active ? "border-emerald-500 text-emerald-700" : "border-transparent text-slate-500 hover:text-slate-800")}>
+                <button key={t.id} onClick={() => setTab(t.id)} className={"flex flex-shrink-0 items-center gap-2 border-b-2 px-3 py-2.5 text-sm font-medium transition-colors " + (active ? "border-[#0A7E6B] text-[#0A7E6B]" : "border-transparent text-slate-500 hover:text-slate-800")}>
                   <Icon n={t.n} s={15} /> {t.label}
                 </button>
               );
@@ -311,9 +326,10 @@
           </div>
         </header>
         <main className="mx-auto max-w-7xl px-5 py-6">
-          {tab === "dashboard"  && <Dashboard data={data} />}
-          {tab === "pipeline"   && <Pipeline data={data} upsert={upsert} remove={remove} />}
-          {tab === "contactos"  && <Contacts data={data} upsert={upsert} remove={remove} search={search} setSearch={setSearch} />}
+          {tab === "inicio"     && <Dashboard data={data} setTab={setTab} />}
+          {tab === "tablero"    && <Pipeline data={data} upsert={upsert} remove={remove} logMove={logMove} />}
+          {tab === "basedatos"  && <BaseDatos />}
+          {tab === "leads"      && <Contacts data={data} upsert={upsert} remove={remove} search={search} setSearch={setSearch} />}
           {tab === "tareas"     && <Tasks data={data} upsert={upsert} remove={remove} />}
           {tab === "calendario" && <CalendarView data={data} />}
         </main>
@@ -324,7 +340,7 @@
   const Splash = ({ text }) => (
     <div className="flex h-screen items-center justify-center">
       <div className="flex items-center gap-3 text-slate-400">
-        <div className="h-4 w-4 animate-spin rounded-full border-2 border-slate-300 border-t-emerald-500" />{text}
+        <div className="h-4 w-4 animate-spin rounded-full border-2 border-slate-300 border-t-[#0A7E6B]" />{text}
       </div>
     </div>
   );
@@ -332,36 +348,56 @@
   /* ----------------------------------------------------------------- */
   /*  Dashboard                                                        */
   /* ----------------------------------------------------------------- */
-  function Dashboard({ data }) {
+  function Dashboard({ data, setTab }) {
     const m = useMemo(() => {
       const opps = data.opportunities;
-      const abiertas = opps.filter((o) => o.etapa !== "ganada" && o.etapa !== "perdida");
-      const ganadas = opps.filter((o) => o.etapa === "ganada");
-      const perdidas = opps.filter((o) => o.etapa === "perdida");
-      const valorAbierto = abiertas.reduce((s, o) => s + (o.valor || 0), 0);
-      const ponderado = abiertas.reduce((s, o) => s + (o.valor || 0) * stageOf(o.etapa).prob / 100, 0);
-      const valorGanado = ganadas.reduce((s, o) => s + (o.valor || 0), 0);
-      const conv = (ganadas.length + perdidas.length) ? Math.round((ganadas.length / (ganadas.length + perdidas.length)) * 100) : 0;
-      const porEtapa = STAGES.filter((s) => s.id !== "ganada" && s.id !== "perdida").map((s) => ({ label: s.label, valor: opps.filter((o) => o.etapa === s.id).reduce((a, o) => a + (o.valor || 0), 0), color: s.color }));
-      const porTipo = CLIENT_TYPES.map((t) => ({ label: t.label, valor: abiertas.filter((o) => o.tipo === t.id).reduce((a, o) => a + (o.valor || 0), 0), color: t.color })).filter((x) => x.valor > 0);
-      const porOrigen = ORIGINS.map((o) => ({ label: o.label, count: opps.filter((x) => x.origen === o.id).length })).filter((x) => x.count > 0).sort((a, b) => b.count - a.count);
-      return { abiertas, ganadas, valorAbierto, ponderado, valorGanado, conv, porEtapa, porTipo, porOrigen };
+      // Pipeline: una oportunidad "cuenta" su valor desde Oportunidad en adelante.
+      const conValor = opps.filter((o) => stageIdx(o.etapa) >= stageIdx("oportunidad"));
+      const valorNominal = conValor.reduce((s, o) => s + (o.valor || 0), 0);
+      const pronostico = conValor.reduce((s, o) => s + ponderado(o), 0);
+      const porEtapa = STAGES.map((s) => ({ id: s.id, label: s.label, count: opps.filter((o) => o.etapa === s.id).length, valor: opps.filter((o) => o.etapa === s.id).reduce((a, o) => a + (o.valor || 0), 0), color: s.color }));
+      const porTipo = CLIENT_TYPES.map((t) => ({ label: t.label, valor: conValor.filter((o) => o.tipo === t.id).reduce((a, o) => a + (o.valor || 0), 0), color: t.color })).filter((x) => x.valor > 0);
+
+      // KPI de conversión HISTÓRICO: se calcula sobre los movimientos registrados.
+      const mv = data.movements || [];
+      const avancesA = (to) => mv.filter((x) => x.tipo === "avance" && x.to === to).length;
+      const tramos = [
+        { key: "lead_prosp",   label: "Lead → Prospecto",        ganados: mv.filter((x) => x.tipo === "avance" && x.to === "prospecto").length, perdidos: 0 },
+        { key: "prosp_op",     label: "Prospecto → Oportunidad", ganados: avancesA("oportunidad"), perdidos: 0 },
+        { key: "op_neg",       label: "Oportunidad → Negociación",ganados: avancesA("negociacion"), perdidos: mv.filter((x) => x.tipo === "perdida" && x.from === "oportunidad").length },
+        { key: "neg_cierre",   label: "Negociación → Cierre",    ganados: mv.filter((x) => x.tipo === "ganada").length, perdidos: mv.filter((x) => x.tipo === "perdida" && x.from === "negociacion").length },
+      ];
+      const tramosPct = tramos.map((t) => { const base = t.ganados + t.perdidos; return { ...t, pct: base ? Math.round((t.ganados / base) * 100) : null }; });
+      const totalGanadas = mv.filter((x) => x.tipo === "ganada").length;
+      const montoGanado = mv.filter((x) => x.tipo === "ganada").reduce((s, x) => s + (x.monto || 0), 0);
+      const totalPerdidas = mv.filter((x) => x.tipo === "perdida").length;
+
+      return { opps, conValor, valorNominal, pronostico, porEtapa, porTipo, tramosPct, totalGanadas, montoGanado, totalPerdidas };
     }, [data]);
 
-    const maxEtapa = Math.max(1, ...m.porEtapa.map((e) => e.valor));
     const totalTipo = m.porTipo.reduce((s, t) => s + t.valor, 0) || 1;
+    const maxEtapaCount = Math.max(1, ...m.porEtapa.map((e) => e.count));
     const tareasVencidas = data.tasks.filter((t) => !t.hecha && t.fecha < todayISO());
     const tareasHoy = data.tasks.filter((t) => !t.hecha && t.fecha === todayISO());
 
     const kpis = [
-      { label: "Valor en pipeline", value: fmtMXN(m.valorAbierto), sub: m.abiertas.length + " oportunidades abiertas", n: "wallet", color: "#0d9488" },
-      { label: "Valor ponderado", value: fmtMXN(m.ponderado), sub: "Ajustado por probabilidad", n: "trending", color: "#6366f1" },
-      { label: "Ganado", value: fmtMXN(m.valorGanado), sub: m.ganadas.length + " cerradas", n: "award", color: "#10b981" },
-      { label: "Tasa de cierre", value: m.conv + "%", sub: "Ganadas vs. perdidas", n: "target", color: "#f59e0b" },
+      { label: "Pipeline nominal", value: fmtMXN(m.valorNominal), sub: m.conValor.length + " oport. (desde Oportunidad)", n: "wallet", color: BRAND.navy },
+      { label: "Pronóstico realista", value: fmtMXN(m.pronostico), sub: "Ponderado por etapa", n: "trending", color: BRAND.teal },
+      { label: "Cierres ganados", value: m.totalGanadas, sub: fmtMXN(m.montoGanado) + " histórico", n: "award", color: "#10b981" },
+      { label: "Caídas registradas", value: m.totalPerdidas, sub: "Regresaron a Prospecto", n: "target", color: BRAND.orange },
     ];
 
     return (
       <div className="space-y-6">
+        {/* Encabezado discreto con identidad */}
+        <div className="flex items-end justify-between">
+          <div>
+            <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-slate-400">Anabasis · CRM</p>
+            <h2 className="mt-0.5 text-xl font-bold tracking-tight text-slate-900">Panorama comercial</h2>
+          </div>
+        </div>
+
+        {/* KPIs de valor */}
         <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
           {kpis.map((k) => (
             <div key={k.label} className="rounded-2xl border border-slate-200 bg-white p-4">
@@ -369,29 +405,48 @@
                 <div className="flex h-7 w-7 items-center justify-center rounded-lg" style={{ backgroundColor: k.color + "1a" }}><Icon n={k.n} s={15} style={{ color: k.color }} /></div>
                 <span className="text-xs font-medium text-slate-500">{k.label}</span>
               </div>
-              <p className="tnum mt-3 text-2xl font-bold text-slate-900">{k.value}</p>
+              <p className="tnum mt-3 text-2xl font-bold tracking-tight text-slate-900">{k.value}</p>
               <p className="mt-1 text-xs text-slate-400">{k.sub}</p>
             </div>
           ))}
         </div>
 
+        {/* KPI compacto: Tasa de Conversión Histórico */}
+        <div className="rounded-2xl border border-slate-200 bg-white p-4">
+          <div className="mb-3 flex items-center gap-2">
+            <Icon n="trending" s={14} style={{ color: BRAND.teal }} />
+            <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-500">Tasa de Conversión · Histórico</h3>
+            <span className="ml-auto text-[10px] text-slate-300">acumulado desde el inicio del registro</span>
+          </div>
+          <div className="grid grid-cols-2 gap-2 lg:grid-cols-4">
+            {m.tramosPct.map((t) => (
+              <div key={t.key} className="rounded-xl border border-slate-100 bg-slate-50/60 px-3 py-2.5">
+                <p className="text-[11px] font-medium text-slate-500">{t.label}</p>
+                <p className="tnum mt-1 text-2xl font-bold tracking-tight" style={{ color: t.pct == null ? "#cbd5e1" : BRAND.navy }}>{t.pct == null ? "—" : t.pct + "%"}</p>
+                <p className="tnum mt-0.5 text-[10px] text-slate-400">{t.ganados} avanzó{t.perdidos ? " · " + t.perdidos + " cayó" : ""}</p>
+              </div>
+            ))}
+          </div>
+          <p className="mt-2 text-[10px] leading-relaxed text-slate-400">Dato histórico: cuenta solo movimientos generados por acción dentro del CRM. Una tarjeta creada directo en una etapa no suma al tramo previo.</p>
+        </div>
+
         <div className="grid gap-4 lg:grid-cols-5">
+          {/* Embudo actual (foto del momento, distinto del histórico) */}
           <div className="rounded-2xl border border-slate-200 bg-white p-5 lg:col-span-3">
-            <h3 className="mb-4 text-sm font-semibold text-slate-700">Valor por etapa</h3>
-            {m.porEtapa.some((e) => e.valor > 0) ? (
-              <div className="space-y-3">
-                {m.porEtapa.map((e) => (
-                  <div key={e.label} className="flex items-center gap-3">
-                    <span className="w-32 flex-shrink-0 text-xs text-slate-500">{e.label}</span>
-                    <div className="h-6 flex-1 overflow-hidden rounded-md bg-slate-100">
-                      <div className="flex h-full items-center justify-end rounded-md pr-2 transition-all" style={{ width: Math.max(4, (e.valor / maxEtapa) * 100) + "%", backgroundColor: e.color }}>
-                        {e.valor > 0 && <span className="tnum text-[10px] font-semibold text-white">{fmtMXN(e.valor)}</span>}
-                      </div>
+            <h3 className="mb-4 text-sm font-semibold text-slate-700">Embudo actual <span className="font-normal text-slate-400">· tarjetas por etapa hoy</span></h3>
+            <div className="space-y-3">
+              {m.porEtapa.map((e) => (
+                <div key={e.id} className="flex items-center gap-3">
+                  <span className="flex w-28 flex-shrink-0 items-center gap-1.5 text-xs text-slate-500"><span className="h-2 w-2 rounded-full" style={{ backgroundColor: e.color }} />{e.label}</span>
+                  <div className="h-6 flex-1 overflow-hidden rounded-md bg-slate-100">
+                    <div className="flex h-full items-center justify-end rounded-md pr-2 transition-all" style={{ width: Math.max(6, (e.count / maxEtapaCount) * 100) + "%", backgroundColor: e.color }}>
+                      {e.count > 0 && <span className="tnum text-[10px] font-semibold text-white">{e.count}</span>}
                     </div>
                   </div>
-                ))}
-              </div>
-            ) : <Empty text="Sin oportunidades abiertas todavía." />}
+                  <span className="tnum w-24 flex-shrink-0 text-right text-[11px] text-slate-400">{e.valor > 0 ? fmtMXN(e.valor) : ""}</span>
+                </div>
+              ))}
+            </div>
           </div>
 
           <div className="rounded-2xl border border-slate-200 bg-white p-5 lg:col-span-2">
@@ -408,7 +463,7 @@
                   </div>
                 ))}
               </div>
-            ) : <Empty text="Sin datos por tipo." />}
+            ) : <Empty text="Sin valor en pipeline aún." />}
           </div>
         </div>
 
@@ -416,24 +471,37 @@
           <TaskAlert title="Seguimientos vencidos" tasks={tareasVencidas} tone="red" />
           <TaskAlert title="Vencen hoy" tasks={tareasHoy} tone="amber" />
         </div>
-
-        {m.porOrigen.length > 0 && (
-          <div className="rounded-2xl border border-slate-200 bg-white p-5">
-            <h3 className="mb-4 text-sm font-semibold text-slate-700">Origen de las oportunidades</h3>
-            <div className="grid grid-cols-2 gap-x-8 gap-y-3 sm:grid-cols-3">
-              {m.porOrigen.map((o) => (
-                <div key={o.label} className="flex items-center justify-between border-b border-slate-100 pb-2 text-sm">
-                  <span className="text-slate-600">{o.label}</span>
-                  <span className="tnum font-semibold text-slate-800">{o.count}</span>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
       </div>
     );
   }
-  const Empty = ({ text }) => <div className="flex h-[180px] items-center justify-center text-sm text-slate-300">{text}</div>;
+  const Empty = ({ text }) => <div className="flex h-[140px] items-center justify-center text-sm text-slate-300">{text}</div>;
+
+  /* ----------------------------------------------------------------- */
+  /*  Base de Datos (placeholder — el motor de importación llega en F2)*/
+  /* ----------------------------------------------------------------- */
+  function BaseDatos() {
+    return (
+      <div className="space-y-4">
+        <div>
+          <h2 className="text-xl font-bold tracking-tight text-slate-900">Base de Datos</h2>
+          <p className="mt-0.5 text-sm text-slate-500">Importación de bases y cribado a Leads.</p>
+        </div>
+        <div className="grid gap-4 lg:grid-cols-2">
+          <div className="rounded-2xl border border-dashed border-slate-300 bg-white p-8 text-center">
+            <div className="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-xl" style={{ backgroundColor: BRAND.teal + "14" }}><Icon n="database" s={22} style={{ color: BRAND.teal }} /></div>
+            <h3 className="text-sm font-semibold text-slate-700">Importar Excel</h3>
+            <p className="mx-auto mt-1 max-w-xs text-xs text-slate-400">Aquí subirás un Excel, el sistema detectará columnas, filtrará por contacto y giro, y depositará los Leads aprobados.</p>
+            <span className="mt-3 inline-block rounded-full bg-slate-100 px-3 py-1 text-[11px] font-medium text-slate-500">Disponible en la siguiente fase</span>
+          </div>
+          <div className="rounded-2xl border border-slate-200 bg-white p-6">
+            <h3 className="mb-1 text-sm font-semibold text-slate-700">Registro de cargas</h3>
+            <p className="mb-4 text-xs text-slate-400">Historial de bases procesadas: archivo, fecha y link de Drive.</p>
+            <div className="rounded-xl border border-slate-100 bg-slate-50/60 py-10 text-center text-xs text-slate-300">Aún no hay cargas registradas.</div>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   function TaskAlert({ title, tasks, tone }) {
     const c = tone === "red" ? { ic: "#ef4444", bg: "#fef2f2" } : { ic: "#f59e0b", bg: "#fffbeb" };
@@ -456,66 +524,105 @@
   /* ----------------------------------------------------------------- */
   /*  Pipeline (kanban drag & drop)                                    */
   /* ----------------------------------------------------------------- */
-  function Pipeline({ data, upsert, remove }) {
+  function Pipeline({ data, upsert, remove, logMove }) {
     const [editing, setEditing] = useState(null);
-    const [dragId, setDragId] = useState(null);
-    const [over, setOver] = useState(null);
+    const [vista, setVista] = useState("kanban");   // "kanban" | "lista"
+    const [filtroEtapa, setFiltroEtapa] = useState("todas");
+    const [accion, setAccion] = useState(null);     // { opp, tipo, destino, titulo }
 
     const exportCSV = () => {
-      const headers = ["Nombre", "Empresa", "Contacto", "Tipo", "Origen", "Valor", "Etapa", "Cierre estimado", "Responsable", "Notas"];
-      const rows = data.opportunities.map((o) => [o.nombre, o.empresa, o.contacto, typeOf(o.tipo).label, (originOf(o.origen) || {}).label || "", o.valor, stageOf(o.etapa).label, o.cierre, o.responsable, (o.notas || "").replace(/\n/g, " ")]);
+      const headers = ["Nombre", "Empresa", "Contacto", "Tipo", "Origen", "Valor", "Etapa", "Inicio", "Cierre estimado", "Responsable", "Cierres previos", "Notas"];
+      const rows = data.opportunities.map((o) => [o.nombre, o.empresa, o.contacto, typeOf(o.tipo).label, (originOf(o.origen) || {}).label || "", o.valor, stageOf(o.etapa).label, o.inicio || "", o.cierreAbierto ? "Abierta" : o.cierre, o.responsable, o.cierresPrevios || 0, (o.notas || "").replace(/\n/g, " ")]);
       const csv = [headers, ...rows].map((r) => r.map((c) => '"' + String(c == null ? "" : c).replace(/"/g, '""') + '"').join(",")).join("\n");
       const blob = new Blob(["\uFEFF" + csv], { type: "text/csv;charset=utf-8;" });
-      const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = "pipeline_" + todayISO() + ".csv"; a.click();
+      const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = "tablero_" + todayISO() + ".csv"; a.click();
     };
-    const onDrop = (stageId) => {
-      if (!dragId) return;
-      const o = data.opportunities.find((x) => x.id === dragId);
-      if (o && o.etapa !== stageId) upsert("opportunities", { ...o, etapa: stageId });
-      setDragId(null); setOver(null);
+    const empty = { id: null, nombre: "", empresa: "", contacto: "", tipo: "privada", origen: "", valor: "", etapa: "prospecto", inicio: todayISO(), cierre: todayISO(), cierreAbierto: false, responsable: "", notas: "", acuerdos: "", pendientes: "", cierresPrevios: 0 };
+
+    // Ejecuta una transición confirmada (avance, perdida o ganada).
+    const ejecutar = (opp, tipo, destino, comentario, montoFinal) => {
+      const from = opp.etapa;
+      if (tipo === "ganada") {
+        // Registrar cierre: guarda evento ganada, regresa a Prospecto, suma cierre previo, limpia valor/cotización.
+        logMove({ ...opp, valor: montoFinal != null ? montoFinal : opp.valor }, from, "cierre", "ganada", comentario);
+        upsert("opportunities", { ...opp, etapa: "prospecto", valor: 0, cierre: todayISO(), cierreAbierto: false, inicio: todayISO(), cierresPrevios: (opp.cierresPrevios || 0) + 1, ultimoCierre: { monto: montoFinal != null ? montoFinal : opp.valor, fecha: todayISO() } });
+      } else if (tipo === "perdida") {
+        logMove(opp, from, "prospecto", "perdida", comentario);
+        upsert("opportunities", { ...opp, etapa: "prospecto" });
+      } else {
+        logMove(opp, from, destino, "avance", comentario);
+        upsert("opportunities", { ...opp, etapa: destino });
+      }
+      setAccion(null);
     };
-    const empty = { id: null, nombre: "", empresa: "", contacto: "", tipo: "privada", origen: "", valor: "", etapa: "nuevo", cierre: todayISO(), responsable: "", notas: "" };
+
+    const stageColumns = STAGES;
+    const visibles = filtroEtapa === "todas" ? data.opportunities : data.opportunities.filter((o) => o.etapa === filtroEtapa);
 
     return (
       <div className="space-y-4">
-        <div className="flex items-center justify-between">
-          <p className="text-sm text-slate-500"><span className="font-semibold text-slate-700">{data.opportunities.length}</span> oportunidades · arrastra las tarjetas</p>
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex items-center gap-2">
+            <div className="flex rounded-lg border border-slate-200 bg-white p-0.5">
+              <button onClick={() => setVista("kanban")} className={"flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-medium transition-colors " + (vista === "kanban" ? "bg-slate-100 text-slate-800" : "text-slate-400 hover:text-slate-600")}><Icon n="grid" s={13} /> Kanban</button>
+              <button onClick={() => setVista("lista")} className={"flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-medium transition-colors " + (vista === "lista" ? "bg-slate-100 text-slate-800" : "text-slate-400 hover:text-slate-600")}><Icon n="list" s={13} /> Lista</button>
+            </div>
+            {vista === "lista" && (
+              <select value={filtroEtapa} onChange={(e) => setFiltroEtapa(e.target.value)} className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-600 outline-none">
+                <option value="todas">Todas las etapas</option>
+                {STAGES.map((s) => <option key={s.id} value={s.id}>{s.label}</option>)}
+              </select>
+            )}
+            <span className="text-sm text-slate-400"><span className="tnum font-semibold text-slate-600">{data.opportunities.length}</span> tarjetas</span>
+          </div>
           <div className="flex gap-2">
             <button onClick={exportCSV} className="flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm font-medium text-slate-600 hover:bg-slate-50"><Icon n="download" s={14} /> CSV</button>
-            <button onClick={() => setEditing(empty)} className="flex items-center gap-1.5 rounded-lg bg-emerald-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-emerald-700"><Icon n="plus" s={14} /> Oportunidad</button>
+            <button onClick={() => setEditing(empty)} className="flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-medium text-white bg-[#0A7E6B] hover:bg-[#096353]"><Icon n="plus" s={14} /> Tarjeta</button>
           </div>
         </div>
-        <div className="flex gap-3 overflow-x-auto pb-3">
-          {STAGES.map((stage) => {
-            const items = data.opportunities.filter((o) => o.etapa === stage.id);
-            const total = items.reduce((s, o) => s + (o.valor || 0), 0);
-            return (
-              <div key={stage.id} onDragOver={(e) => { e.preventDefault(); setOver(stage.id); }} onDragLeave={() => setOver(null)} onDrop={() => onDrop(stage.id)}
-                className={"flex w-64 flex-shrink-0 flex-col rounded-xl border p-2 transition-colors " + (over === stage.id ? "border-emerald-300 bg-emerald-50/50" : "border-slate-200 bg-slate-100/60")}>
-                <div className="mb-2 flex items-center gap-2 px-1.5 pt-1">
-                  <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: stage.color }} />
-                  <span className="text-xs font-semibold text-slate-700">{stage.label}</span>
-                  <span className="tnum ml-auto rounded-full bg-white px-1.5 py-0.5 text-[10px] font-medium text-slate-400">{items.length}</span>
+
+        {vista === "kanban" ? (
+          <div className="flex gap-3 overflow-x-auto pb-3">
+            {stageColumns.map((stage) => {
+              const items = data.opportunities.filter((o) => o.etapa === stage.id);
+              const total = items.reduce((s, o) => s + (o.valor || 0), 0);
+              return (
+                <div key={stage.id} className="flex w-72 flex-shrink-0 flex-col rounded-xl border border-slate-200 bg-slate-100/60 p-2">
+                  <div className="mb-1 flex items-center gap-2 px-1.5 pt-1">
+                    <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: stage.color }} />
+                    <span className="text-xs font-semibold text-slate-700">{stage.label}</span>
+                    <span className="tnum ml-auto rounded-full bg-white px-1.5 py-0.5 text-[10px] font-medium text-slate-400">{items.length}</span>
+                  </div>
+                  {stage.peso > 0 && <p className="tnum mb-2 px-1.5 text-[11px] font-medium text-slate-400">{fmtMXN(total)}</p>}
+                  <div className="flex flex-col gap-2">
+                    {items.map((o) => <Card key={o.id} o={o} onOpen={() => setEditing(o)} onAccion={setAccion} />)}
+                    {items.length === 0 && <div className="rounded-lg border border-dashed border-slate-200 py-3 text-center text-[11px] text-slate-300">Vacío</div>}
+                  </div>
                 </div>
-                <p className="tnum mb-2 px-1.5 text-[11px] font-medium text-slate-400">{fmtMXN(total)}</p>
-                <div className="flex flex-col gap-2">
-                  {items.map((o) => {
-                    const t = typeOf(o.tipo);
-                    return (
-                      <div key={o.id} draggable onDragStart={() => setDragId(o.id)} onDragEnd={() => { setDragId(null); setOver(null); }} onClick={() => setEditing(o)}
-                        className={"group cursor-pointer rounded-lg border border-slate-200 bg-white p-2.5 shadow-sm transition-all hover:shadow-md " + (dragId === o.id ? "opacity-40" : "")}>
-                        <div className="flex items-start gap-1"><Icon n="grip" s={13} className="mt-0.5 flex-shrink-0 text-slate-300" /><p className="flex-1 text-sm font-medium leading-tight text-slate-800">{o.nombre}</p></div>
-                        <p className="mt-1 pl-4 text-xs text-slate-500">{o.empresa}</p>
-                        <div className="mt-2 flex items-center justify-between pl-4"><span className="tnum text-xs font-semibold text-slate-700">{fmtMXN(o.valor)}</span><Badge color={t.color} bg={t.bg}>{t.label.split(" ")[0]}</Badge></div>
-                      </div>
-                    );
-                  })}
-                  {items.length === 0 && <div className="rounded-lg border border-dashed border-slate-200 py-3 text-center text-[11px] text-slate-300">Vacío</div>}
-                </div>
-              </div>
-            );
-          })}
-        </div>
+              );
+            })}
+          </div>
+        ) : (
+          <div className="space-y-2">
+            {visibles.length === 0 ? <div className="rounded-2xl border border-dashed border-slate-200 py-16 text-center text-sm text-slate-400">Sin tarjetas en esta vista.</div> :
+              visibles.sort((a, b) => stageIdx(b.etapa) - stageIdx(a.etapa)).map((o) => {
+                const t = typeOf(o.tipo), s = stageOf(o.etapa);
+                return (
+                  <div key={o.id} className="flex items-center gap-3 rounded-xl border border-slate-200 bg-white px-4 py-3">
+                    <span className="h-2.5 w-2.5 flex-shrink-0 rounded-full" style={{ backgroundColor: s.color }} title={s.label} />
+                    <div className="min-w-0 flex-1 cursor-pointer" onClick={() => setEditing(o)}>
+                      <div className="flex items-center gap-2"><p className="truncate text-sm font-medium text-slate-800">{o.nombre}</p>{(o.cierresPrevios > 0) && <span className="flex-shrink-0 rounded-full bg-[#0A7E6B]/10 px-1.5 py-0.5 text-[10px] font-medium text-[#0A7E6B]">Cliente · {o.cierresPrevios}</span>}</div>
+                      <p className="truncate text-xs text-slate-500">{o.empresa}{o.responsable ? " · " + o.responsable : ""}</p>
+                    </div>
+                    <span className="hidden sm:block"><Badge color={t.color} bg={t.bg}>{t.label.split(" ")[0]}</Badge></span>
+                    <span className="tnum w-28 flex-shrink-0 text-right text-sm font-semibold text-slate-700">{s.peso > 0 ? fmtMXN(o.valor) : "—"}</span>
+                    <span className="w-24 flex-shrink-0 text-right text-xs font-medium" style={{ color: s.color }}>{s.label}</span>
+                  </div>
+                );
+              })}
+          </div>
+        )}
+
         {editing && <OppModal
           opp={editing}
           contacts={data.contacts}
@@ -523,34 +630,121 @@
           onClose={() => setEditing(null)}
           onSaveTask={(t) => upsert("tasks", t)}
           onDeleteTask={(id) => remove("tasks", id)}
-          onSave={(o, plantilla) => {
+          onSave={(o, plantilla, nuevoContacto) => {
             upsert("opportunities", o);
+            if (nuevoContacto) upsert("contacts", nuevoContacto);
             if (plantilla) {
+              const base = o.inicio || todayISO();
               PLANTILLA_SEGUIMIENTO.forEach((p) => {
-                upsert("tasks", { id: uid(), titulo: p.titulo, vinculo: o.empresa || o.nombre, oppId: o.id, fecha: fechaMas(p.dias), hecha: false, responsable: o.responsable || "", prioridad: p.prioridad });
+                const d = new Date(base + "T00:00:00"); d.setDate(d.getDate() + p.dias);
+                upsert("tasks", { id: uid(), titulo: p.titulo, vinculo: o.empresa || o.nombre, oppId: o.id, fecha: d.toISOString().slice(0, 10), hecha: false, responsable: o.responsable || "", prioridad: p.prioridad });
               });
             }
             setEditing(null);
           }}
           onDelete={(id) => { remove("opportunities", id); setEditing(null); }} />}
+
+        {accion && <AccionModal accion={accion} onClose={() => setAccion(null)} onConfirm={ejecutar} />}
       </div>
     );
   }
 
+  // Tarjeta del kanban con sus botones de acción-llave.
+  function Card({ o, onOpen, onAccion }) {
+    const t = typeOf(o.tipo), s = stageOf(o.etapa);
+    const idx = stageIdx(o.etapa);
+    return (
+      <div className="group rounded-lg border border-slate-200 bg-white p-2.5 shadow-sm transition-all hover:shadow-md">
+        <div className="cursor-pointer" onClick={onOpen}>
+          <div className="flex items-start justify-between gap-1">
+            <p className="flex-1 text-sm font-medium leading-tight text-slate-800">{o.nombre}</p>
+            {(o.cierresPrevios > 0) && <span className="flex-shrink-0 rounded-full bg-[#0A7E6B]/10 px-1.5 py-0.5 text-[9px] font-semibold text-[#0A7E6B]" title={"Cliente con " + o.cierresPrevios + " cierre(s) previo(s)"}>★{o.cierresPrevios}</span>}
+          </div>
+          <p className="mt-1 text-xs text-slate-500">{o.empresa}</p>
+          <div className="mt-2 flex items-center justify-between">
+            <span className="tnum text-xs font-semibold text-slate-700">{s.peso > 0 ? fmtMXN(o.valor) : "—"}</span>
+            <Badge color={t.color} bg={t.bg}>{t.label.split(" ")[0]}</Badge>
+          </div>
+        </div>
+        {/* Acciones-llave */}
+        <div className="mt-2 flex flex-wrap gap-1 border-t border-slate-100 pt-2">
+          {s.accion && (
+            <button onClick={() => onAccion({ opp: o, tipo: s.id === "negociacion" ? "ganada" : "avance", destino: s.siguiente, titulo: s.accion })}
+              className="flex flex-1 items-center justify-center gap-1 rounded-md px-2 py-1 text-[11px] font-semibold text-white" style={{ backgroundColor: s.color }}>
+              <Icon n={s.id === "negociacion" ? "award" : "arrowR"} s={12} /> {s.accion}
+            </button>
+          )}
+          {idx >= stageIdx("oportunidad") && o.etapa !== "cierre" && (
+            <button onClick={() => onAccion({ opp: o, tipo: "perdida", destino: "prospecto", titulo: "Regresar a Prospecto" })}
+              className="flex items-center justify-center gap-1 rounded-md border border-slate-200 px-2 py-1 text-[11px] font-medium text-slate-500 hover:bg-slate-50" title="No avanzó: regresa a Prospecto">
+              <Icon n="arrowD" s={12} />
+            </button>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  // Modal de confirmación de acción-llave (avance / perdida / ganada) con comentario opcional.
+  function AccionModal({ accion, onClose, onConfirm }) {
+    const { opp, tipo, destino, titulo } = accion;
+    const [comentario, setComentario] = useState("");
+    const [monto, setMonto] = useState(opp.valor || "");
+    const esGanada = tipo === "ganada";
+    const esPerdida = tipo === "perdida";
+    const desc = esGanada
+      ? "Registra el cierre como ganado. La tarjeta regresará a Prospecto (puede recomprar) y quedará marcada como cliente."
+      : esPerdida
+      ? "La oportunidad no avanzó. Regresa a Prospecto para reactivarla después. Queda registrada como caída."
+      : "Confirma que ya realizaste esta acción para avanzar a la siguiente etapa.";
+    return (
+      <Modal title={titulo} onClose={onClose}>
+        <div className="space-y-3">
+          <p className="text-sm text-slate-500">{desc}</p>
+          {esGanada && (
+            <Field label="Monto final del cierre (MXN)"><input type="number" className={inputCls} value={monto} onChange={(e) => setMonto(e.target.value)} placeholder="0" autoFocus /></Field>
+          )}
+          <Field label="Comentario (opcional)"><textarea rows={2} className={inputCls} value={comentario} onChange={(e) => setComentario(e.target.value)} placeholder="Notas de esta acción…" /></Field>
+          <div className="flex justify-end gap-2 pt-1">
+            <button onClick={onClose} className="rounded-lg px-4 py-2 text-sm font-medium text-slate-500 hover:bg-slate-100">Cancelar</button>
+            <button onClick={() => onConfirm(opp, tipo, destino, comentario, esGanada ? (Number(monto) || 0) : undefined)}
+              className="rounded-lg px-4 py-2 text-sm font-medium text-white" style={{ backgroundColor: esPerdida ? "#64748b" : esGanada ? "#10b981" : BRAND.teal }}>
+              {esGanada ? "Registrar cierre" : esPerdida ? "Regresar a Prospecto" : "Confirmar y avanzar"}
+            </button>
+          </div>
+        </div>
+      </Modal>
+    );
+  }
+
   function OppModal({ opp, contacts = [], tasks = [], onClose, onSave, onSaveTask, onDeleteTask, onDelete }) {
-    const [f, setF] = useState({ ...opp });
+    const [f, setF] = useState({ inicio: todayISO(), cierre: todayISO(), cierreAbierto: false, acuerdos: "", pendientes: "", cierresPrevios: 0, ...opp });
     const [aplicarPlantilla, setAplicarPlantilla] = useState(false);
     const [nuevaTarea, setNuevaTarea] = useState({ titulo: "", fecha: todayISO(), prioridad: "media" });
+    // Datos de contacto para autoguardar en Leads (solo al crear).
+    const [tel, setTel] = useState("");
+    const [mail, setMail] = useState("");
     const oppId = opp.id;
     const set = (k, v) => setF((p) => ({ ...p, [k]: v }));
     const onContacto = (v) => {
       setF((p) => {
         const match = contacts.find((c) => (c.nombre || "").toLowerCase() === v.toLowerCase());
-        if (match) return { ...p, contacto: v, empresa: match.empresa || p.empresa, tipo: match.tipo || p.tipo };
+        if (match) { setTel(match.telefono || ""); setMail(match.email || ""); return { ...p, contacto: v, empresa: match.empresa || p.empresa, tipo: match.tipo || p.tipo }; }
         return { ...p, contacto: v };
       });
     };
-    const save = () => { if (!f.nombre.trim()) return; onSave({ ...f, id: f.id || uid(), valor: Number(f.valor) || 0 }, aplicarPlantilla); };
+    const save = () => {
+      if (!f.nombre.trim()) return;
+      const oid = f.id || uid();
+      const clean = { ...f, id: oid, valor: Number(f.valor) || 0, cierresPrevios: f.cierresPrevios || 0 };
+      // ¿Autoguardar contacto nuevo en Leads? Solo si hay nombre de contacto y no existe ya (por nombre o correo).
+      let nuevoContacto = null;
+      if (f.contacto && f.contacto.trim()) {
+        const existe = contacts.find((c) => (c.nombre || "").toLowerCase() === f.contacto.toLowerCase() || (mail && (c.email || "").toLowerCase() === mail.toLowerCase()));
+        if (!existe) nuevoContacto = { id: uid(), nombre: f.contacto.trim(), empresa: f.empresa || "", puesto: "", email: mail || "", telefono: tel || "", tipo: f.tipo || "privada", notas: "" };
+      }
+      onSave(clean, aplicarPlantilla, nuevoContacto);
+    };
     const seguimientos = tasks.filter((t) => t.oppId && t.oppId === oppId).sort((a, b) => (a.fecha || "").localeCompare(b.fecha || ""));
     const agregarSeguimiento = () => {
       if (!nuevaTarea.titulo.trim()) return;
@@ -558,8 +752,11 @@
       setNuevaTarea({ titulo: "", fecha: todayISO(), prioridad: "media" });
     };
     return (
-      <Modal title={opp.id ? "Editar oportunidad" : "Nueva oportunidad"} onClose={onClose}>
+      <Modal title={opp.id ? "Editar tarjeta" : "Nueva tarjeta"} onClose={onClose}>
         <div className="space-y-3">
+          {opp.id && f.cierresPrevios > 0 && (
+            <div className="flex items-center gap-2 rounded-lg bg-[#0A7E6B]/8 px-3 py-2 text-xs font-medium text-[#0A7E6B]"><Icon n="award" s={14} /> Cliente recurrente · {f.cierresPrevios} cierre(s) previo(s){f.ultimoCierre ? " · último " + fmtMXN(f.ultimoCierre.monto) : ""}</div>
+          )}
           <Field label="Nombre del proyecto *"><input className={inputCls} value={f.nombre} onChange={(e) => set("nombre", e.target.value)} placeholder="Ej. Reacondicionamiento piso 4" autoFocus /></Field>
           <div className="grid grid-cols-2 gap-3">
             <Field label="Empresa"><input className={inputCls} value={f.empresa} onChange={(e) => set("empresa", e.target.value)} /></Field>
@@ -570,26 +767,40 @@
               </datalist>
             </Field>
           </div>
+          {!opp.id && (
+            <div className="grid grid-cols-2 gap-3">
+              <Field label="Teléfono del contacto"><input className={inputCls} value={tel} onChange={(e) => setTel(e.target.value)} placeholder="Se guardará en Leads" /></Field>
+              <Field label="Correo del contacto"><input className={inputCls} value={mail} onChange={(e) => setMail(e.target.value)} placeholder="Se guardará en Leads" /></Field>
+            </div>
+          )}
           <div className="grid grid-cols-2 gap-3">
             <Field label="Tipo de cliente"><select className={inputCls} value={f.tipo} onChange={(e) => set("tipo", e.target.value)}>{CLIENT_TYPES.map((t) => <option key={t.id} value={t.id}>{t.label}</option>)}</select></Field>
             <Field label="Valor estimado (MXN)"><input type="number" className={inputCls} value={f.valor} onChange={(e) => set("valor", e.target.value)} placeholder="0" /></Field>
           </div>
           <div className="grid grid-cols-2 gap-3">
-            <Field label="Etapa"><select className={inputCls} value={f.etapa} onChange={(e) => set("etapa", e.target.value)}>{STAGES.map((s) => <option key={s.id} value={s.id}>{s.label} · {s.prob}%</option>)}</select></Field>
-            <Field label="Cierre estimado"><input type="date" className={inputCls} value={f.cierre} onChange={(e) => set("cierre", e.target.value)} /></Field>
-          </div>
-          <div className="grid grid-cols-2 gap-3">
-            <Field label="Origen del lead"><select className={inputCls} value={f.origen || ""} onChange={(e) => set("origen", e.target.value)}><option value="">— Sin especificar —</option>{ORIGINS.map((o) => <option key={o.id} value={o.id}>{o.label}</option>)}</select></Field>
+            <Field label="Etapa"><select className={inputCls} value={f.etapa} onChange={(e) => set("etapa", e.target.value)}>{STAGES.map((s) => <option key={s.id} value={s.id}>{s.label}{s.peso > 0 ? " · " + s.peso + "%" : ""}</option>)}</select></Field>
             <Field label="Responsable"><input className={inputCls} value={f.responsable} onChange={(e) => set("responsable", e.target.value)} placeholder="Quién lleva la cuenta" /></Field>
           </div>
-          <Field label="Notas"><textarea rows={2} className={inputCls} value={f.notas} onChange={(e) => set("notas", e.target.value)} /></Field>
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="Fecha de inicio"><input type="date" className={inputCls} value={f.inicio || ""} onChange={(e) => set("inicio", e.target.value)} /></Field>
+            <Field label="Cierre estimado">
+              <input type="date" className={inputCls + (f.cierreAbierto ? " opacity-40 pointer-events-none" : "")} value={f.cierre || ""} onChange={(e) => set("cierre", e.target.value)} />
+              <label className="mt-1 flex cursor-pointer items-center gap-1.5 text-xs text-slate-500"><input type="checkbox" className="h-3.5 w-3.5 accent-[#0A7E6B]" checked={!!f.cierreAbierto} onChange={(e) => set("cierreAbierto", e.target.checked)} /> Sin fecha de cierre / relación abierta</label>
+            </Field>
+          </div>
+          <Field label="Origen del lead"><select className={inputCls} value={f.origen || ""} onChange={(e) => set("origen", e.target.value)}><option value="">— Sin especificar —</option>{ORIGINS.map((o) => <option key={o.id} value={o.id}>{o.label}</option>)}</select></Field>
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="Acuerdos / Compromisos"><textarea rows={2} className={inputCls} value={f.acuerdos || ""} onChange={(e) => set("acuerdos", e.target.value)} /></Field>
+            <Field label="Pendientes"><textarea rows={2} className={inputCls} value={f.pendientes || ""} onChange={(e) => set("pendientes", e.target.value)} /></Field>
+          </div>
+          <Field label="Notas"><textarea rows={2} className={inputCls} value={f.notas || ""} onChange={(e) => set("notas", e.target.value)} /></Field>
 
           {!opp.id && (
-            <label className="flex cursor-pointer items-start gap-2 rounded-lg border border-emerald-200 bg-emerald-50/50 p-3">
-              <input type="checkbox" className="mt-0.5 h-4 w-4 accent-emerald-600" checked={aplicarPlantilla} onChange={(e) => setAplicarPlantilla(e.target.checked)} />
+            <label className="flex cursor-pointer items-start gap-2 rounded-lg border border-[#0A7E6B]/25 bg-[#0A7E6B]/5 p-3">
+              <input type="checkbox" className="mt-0.5 h-4 w-4 accent-[#0A7E6B]" checked={aplicarPlantilla} onChange={(e) => setAplicarPlantilla(e.target.checked)} />
               <span className="text-sm text-slate-700">
                 <span className="font-medium">Aplicar plantilla de seguimiento</span>
-                <span className="block text-xs text-slate-500">Genera {PLANTILLA_SEGUIMIENTO.length} recordatorios automáticos (días {PLANTILLA_SEGUIMIENTO.map((p) => p.dias).join(", ")}) en Tareas y Calendario.</span>
+                <span className="block text-xs text-slate-500">Genera {PLANTILLA_SEGUIMIENTO.length} recordatorios automáticos (días {PLANTILLA_SEGUIMIENTO.map((p) => p.dias).join(", ")} desde la fecha de inicio) en Tareas y Calendario. Si la fecha de inicio es previa, los recordatorios vencidos se crean igual.</span>
               </span>
             </label>
           )}
@@ -608,7 +819,7 @@
                     const vencida = !t.hecha && t.fecha < todayISO();
                     return (
                       <li key={t.id} className="flex items-center gap-2 rounded-md bg-white px-2 py-1.5 text-xs">
-                        <button onClick={() => onSaveTask({ ...t, hecha: !t.hecha })} className="flex-shrink-0">{t.hecha ? <Icon n="circleCheck" s={15} className="text-emerald-500" /> : <Icon n="circle" s={15} className="text-slate-300 hover:text-emerald-400" />}</button>
+                        <button onClick={() => onSaveTask({ ...t, hecha: !t.hecha })} className="flex-shrink-0">{t.hecha ? <Icon n="circleCheck" s={15} className="text-[#0A7E6B]" /> : <Icon n="circle" s={15} className="text-slate-300 hover:text-[#0A7E6B]" />}</button>
                         <span className={"flex-1 " + (t.hecha ? "text-slate-400 line-through" : "text-slate-700")}>{t.titulo}</span>
                         <span className={vencida ? "font-semibold text-red-500" : "text-slate-400"}>{fmtDate(t.fecha)}</span>
                         <span className="h-1.5 w-1.5 flex-shrink-0 rounded-full" style={{ backgroundColor: p.color }} />
@@ -630,7 +841,7 @@
             {opp.id ? <button onClick={() => onDelete(opp.id)} className="flex items-center gap-1.5 rounded-lg px-3 py-2 text-sm font-medium text-red-600 hover:bg-red-50"><Icon n="trash" s={14} /> Eliminar</button> : <span />}
             <div className="flex gap-2">
               <button onClick={onClose} className="rounded-lg px-4 py-2 text-sm font-medium text-slate-500 hover:bg-slate-100">Cancelar</button>
-              <button onClick={save} className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-700">Guardar</button>
+              <button onClick={save} className="rounded-lg bg-[#0A7E6B] px-4 py-2 text-sm font-medium text-white hover:bg-[#096353]">Guardar</button>
             </div>
           </div>
         </div>
@@ -645,31 +856,42 @@
     const [editing, setEditing] = useState(null);
     const empty = { id: null, empresa: "", nombre: "", puesto: "", email: "", telefono: "", tipo: "privada", notas: "" };
     const filtered = data.contacts.filter((c) => (c.nombre + " " + c.empresa + " " + c.email).toLowerCase().includes(search.toLowerCase()));
+    // Promueve un Lead a Prospecto: crea una tarjeta en el tablero (registro de movimiento incluido).
+    const contactar = (c) => {
+      const oid = uid();
+      upsert("opportunities", { id: oid, nombre: "Prospecto · " + (c.empresa || c.nombre), empresa: c.empresa || "", contacto: c.nombre || "", tipo: c.tipo || "privada", origen: "", valor: 0, etapa: "prospecto", inicio: todayISO(), cierre: todayISO(), cierreAbierto: false, responsable: "", notas: "", acuerdos: "", pendientes: "", cierresPrevios: 0 });
+      upsert("movements", { id: uid(), oppId: oid, oppNombre: "Prospecto · " + (c.empresa || c.nombre), empresa: c.empresa || "", from: "lead", to: "prospecto", tipo: "avance", comentario: "Contactado desde Leads", monto: 0, fecha: new Date().toISOString() });
+    };
     return (
       <div className="space-y-4">
+        <div>
+          <h2 className="text-xl font-bold tracking-tight text-slate-900">Leads</h2>
+          <p className="mt-0.5 text-sm text-slate-500">Universo de contactos. Al contactar uno, sube al Tablero como Prospecto.</p>
+        </div>
         <div className="flex items-center justify-between gap-3">
           <div className="relative max-w-xs flex-1">
             <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"><Icon n="search" s={15} /></span>
-            <input className={inputCls + " pl-9"} placeholder="Buscar contacto…" value={search} onChange={(e) => setSearch(e.target.value)} />
+            <input className={inputCls + " pl-9"} placeholder="Buscar lead…" value={search} onChange={(e) => setSearch(e.target.value)} />
           </div>
-          <button onClick={() => setEditing(empty)} className="flex items-center gap-1.5 rounded-lg bg-emerald-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-emerald-700"><Icon n="plus" s={14} /> Contacto</button>
+          <button onClick={() => setEditing(empty)} className="flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-medium text-white bg-[#0A7E6B] hover:bg-[#096353]"><Icon n="plus" s={14} /> Lead</button>
         </div>
-        {filtered.length === 0 ? <div className="rounded-2xl border border-dashed border-slate-200 py-16 text-center text-sm text-slate-400">Sin contactos. Agrega el primero.</div> : (
+        {filtered.length === 0 ? <div className="rounded-2xl border border-dashed border-slate-200 py-16 text-center text-sm text-slate-400">Sin leads todavía. Agrega el primero o impórtalos desde Base de Datos (próxima fase).</div> : (
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
             {filtered.map((c) => {
               const t = typeOf(c.tipo);
               return (
-                <div key={c.id} onClick={() => setEditing(c)} className="group cursor-pointer rounded-2xl border border-slate-200 bg-white p-4 transition-all hover:shadow-md">
-                  <div className="flex items-start justify-between">
+                <div key={c.id} className="group rounded-2xl border border-slate-200 bg-white p-4 transition-all hover:shadow-md">
+                  <div className="flex cursor-pointer items-start justify-between" onClick={() => setEditing(c)}>
                     <div className="flex h-9 w-9 items-center justify-center rounded-full text-sm font-semibold" style={{ backgroundColor: t.bg, color: t.color }}>{(c.nombre || "?").slice(0, 1).toUpperCase()}</div>
                     <Badge color={t.color} bg={t.bg}>{t.label.split(" ")[0]}</Badge>
                   </div>
-                  <p className="mt-3 text-sm font-semibold text-slate-800">{c.nombre || "Sin nombre"}</p>
+                  <p className="mt-3 cursor-pointer text-sm font-semibold text-slate-800" onClick={() => setEditing(c)}>{c.nombre || "Sin nombre"}</p>
                   <p className="text-xs text-slate-500">{c.puesto}{c.puesto && c.empresa ? " · " : ""}{c.empresa}</p>
                   <div className="mt-3 space-y-1 border-t border-slate-100 pt-3">
                     {c.email && <p className="flex items-center gap-1.5 text-xs text-slate-500"><Icon n="mail" s={12} /> {c.email}</p>}
                     {c.telefono && <p className="flex items-center gap-1.5 text-xs text-slate-500"><Icon n="phone" s={12} /> {c.telefono}</p>}
                   </div>
+                  <button onClick={() => contactar(c)} className="mt-3 flex w-full items-center justify-center gap-1.5 rounded-lg border border-[#0A7E6B]/30 bg-[#0A7E6B]/5 py-1.5 text-xs font-semibold text-[#0A7E6B] hover:bg-[#0A7E6B]/10"><Icon n="arrowR" s={13} /> Contactado → Prospecto</button>
                 </div>
               );
             })}
@@ -700,7 +922,7 @@
             {c.id ? <button onClick={() => onDelete(c.id)} className="flex items-center gap-1.5 rounded-lg px-3 py-2 text-sm font-medium text-red-600 hover:bg-red-50"><Icon n="trash" s={14} /> Eliminar</button> : <span />}
             <div className="flex gap-2">
               <button onClick={onClose} className="rounded-lg px-4 py-2 text-sm font-medium text-slate-500 hover:bg-slate-100">Cancelar</button>
-              <button onClick={() => f.nombre.trim() && onSave({ ...f, id: f.id || uid() })} className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-700">Guardar</button>
+              <button onClick={() => f.nombre.trim() && onSave({ ...f, id: f.id || uid() })} className="rounded-lg bg-[#0A7E6B] px-4 py-2 text-sm font-medium text-white hover:bg-[#096353]">Guardar</button>
             </div>
           </div>
         </div>
@@ -722,7 +944,7 @@
       const vencida = !t.hecha && t.fecha < todayISO();
       return (
         <div className="flex items-center gap-3 rounded-xl border border-slate-200 bg-white px-4 py-3">
-          <button onClick={() => toggle(t)} className="flex-shrink-0 text-slate-300 hover:text-emerald-400">{t.hecha ? <Icon n="circleCheck" s={20} className="text-emerald-500" /> : <Icon n="circle" s={20} />}</button>
+          <button onClick={() => toggle(t)} className="flex-shrink-0 text-slate-300 hover:text-[#0A7E6B]">{t.hecha ? <Icon n="circleCheck" s={20} className="text-[#0A7E6B]" /> : <Icon n="circle" s={20} />}</button>
           <div className="min-w-0 flex-1 cursor-pointer" onClick={() => setEditing(t)}>
             <p className={"text-sm font-medium " + (t.hecha ? "text-slate-400 line-through" : "text-slate-800")}>{t.titulo}</p>
             <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-slate-400">
@@ -740,7 +962,7 @@
       <div className="space-y-4">
         <div className="flex items-center justify-between">
           <p className="text-sm text-slate-500"><span className="font-semibold text-slate-700">{pendientes.length}</span> pendientes · <span className="text-slate-400">{hechas.length} completadas</span></p>
-          <button onClick={() => setEditing(empty)} className="flex items-center gap-1.5 rounded-lg bg-emerald-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-emerald-700"><Icon n="plus" s={14} /> Tarea</button>
+          <button onClick={() => setEditing(empty)} className="flex items-center gap-1.5 rounded-lg bg-[#0A7E6B] px-3 py-1.5 text-sm font-medium text-white hover:bg-[#096353]"><Icon n="plus" s={14} /> Tarea</button>
         </div>
         {pendientes.length === 0 && hechas.length === 0 ? <div className="rounded-2xl border border-dashed border-slate-200 py-16 text-center text-sm text-slate-400">Sin tareas. Agrega un seguimiento.</div> : (
           <div className="space-y-2">
@@ -768,7 +990,7 @@
           <Field label="Responsable"><input className={inputCls} value={f.responsable} onChange={(e) => set("responsable", e.target.value)} /></Field>
           <div className="flex justify-end gap-2 pt-1">
             <button onClick={onClose} className="rounded-lg px-4 py-2 text-sm font-medium text-slate-500 hover:bg-slate-100">Cancelar</button>
-            <button onClick={() => f.titulo.trim() && onSave({ ...f, id: f.id || uid() })} className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-700">Guardar</button>
+            <button onClick={() => f.titulo.trim() && onSave({ ...f, id: f.id || uid() })} className="rounded-lg bg-[#0A7E6B] px-4 py-2 text-sm font-medium text-white hover:bg-[#096353]">Guardar</button>
           </div>
         </div>
       </Modal>
@@ -792,7 +1014,7 @@
       const map = {};
       const add = (iso, ev) => { if (!iso) return; (map[iso] = map[iso] || []).push(ev); };
       data.tasks.forEach((t) => add(t.fecha, { type: "tarea", label: t.titulo, color: t.hecha ? "#94a3b8" : "#0d9488" }));
-      data.opportunities.filter((o) => o.etapa !== "perdida").forEach((o) => add(o.cierre, { type: "cierre", label: o.nombre + " · " + fmtMXN(o.valor), color: stageOf(o.etapa).color }));
+      data.opportunities.filter((o) => o.etapa === "cierre" || (!o.cierreAbierto && stageIdx(o.etapa) >= stageIdx("oportunidad"))).forEach((o) => { if (!o.cierreAbierto) add(o.cierre, { type: "cierre", label: o.nombre + " · " + fmtMXN(o.valor), color: stageOf(o.etapa).color }); });
       return map;
     }, [data]);
 
@@ -825,7 +1047,7 @@
               const isToday = dayISO === todayISO();
               return (
                 <div key={i} className={"min-h-[92px] border-b border-r border-slate-100 p-1.5 " + (d ? "" : "bg-slate-50/50")}>
-                  {d && <div className={"mb-1 flex h-5 w-5 items-center justify-center rounded-full text-xs " + (isToday ? "bg-emerald-600 font-semibold text-white" : "text-slate-400")}>{d}</div>}
+                  {d && <div className={"mb-1 flex h-5 w-5 items-center justify-center rounded-full text-xs " + (isToday ? "bg-[#0A7E6B] font-semibold text-white" : "text-slate-400")}>{d}</div>}
                   <div className="space-y-1">
                     {evs.slice(0, 3).map((e, j) => (
                       <div key={j} className="truncate rounded px-1 py-0.5 text-[10px] font-medium text-white" style={{ backgroundColor: e.color }} title={e.label}>{e.label}</div>
