@@ -311,7 +311,7 @@
             </div>
             <div className="flex items-center gap-1">
               <button onClick={reload} title="Actualizar" className="rounded-lg p-2 text-slate-400 hover:bg-slate-100 hover:text-slate-600"><Icon n="refresh" s={15} /></button>
-              {CLOUD && <button onClick={() => supa.auth.signOut()} className="flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs text-slate-400 hover:bg-slate-100 hover:text-slate-600"><Icon n="logout" s={13} /> Salir</button>}
+              {CLOUD && <button onClick={async () => { try { await supa.auth.signOut(); } catch (e) { console.error(e); } window.location.reload(); }} className="flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs text-slate-400 hover:bg-slate-100 hover:text-slate-600"><Icon n="logout" s={13} /> Salir</button>}
             </div>
           </div>
           <div className="mx-auto flex max-w-7xl items-center gap-1 overflow-x-auto px-3">
