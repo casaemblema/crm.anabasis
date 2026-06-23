@@ -10,6 +10,7 @@
   <script crossorigin src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.production.min.js"></script>
   <script src="https://unpkg.com/@babel/standalone@7.26.4/babel.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4"></script>
+  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link href="https://fonts.googleapis.com/css2?family=Figtree:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
   <style>
@@ -135,10 +136,10 @@
   /* ----------------------------------------------------------------- */
   const CLOUD = !!(window.SUPABASE_URL && window.SUPABASE_ANON_KEY);
   const supa = CLOUD ? window.supabase.createClient(window.SUPABASE_URL, window.SUPABASE_ANON_KEY) : null;
-  const KIND = { opportunities: "opportunity", contacts: "contact", tasks: "task", movements: "movement" };
+  const KIND = { opportunities: "opportunity", contacts: "contact", tasks: "task", movements: "movement", imports: "import" };
   const LS_KEY = "crm-data-v1";
 
-  const SEED = { opportunities: [], contacts: [], tasks: [], movements: [] };
+  const SEED = { opportunities: [], contacts: [], tasks: [], movements: [], imports: [] };
 
   const db = {
     async list() {
@@ -149,7 +150,7 @@
       }
       const { data, error } = await supa.from("records").select("id, kind, data");
       if (error) throw error;
-      const out = { opportunities: [], contacts: [], tasks: [], movements: [] };
+      const out = { opportunities: [], contacts: [], tasks: [], movements: [], imports: [] };
       for (const row of data) {
         const key = Object.keys(KIND).find((k) => KIND[k] === row.kind);
         if (key) out[key].push({ id: row.id, ...row.data });
@@ -158,7 +159,7 @@
     },
     async save(key, item) {
       if (!CLOUD) {
-        const all = JSON.parse(localStorage.getItem(LS_KEY) || JSON.stringify({ opportunities: [], contacts: [], tasks: [], movements: [] }));
+        const all = JSON.parse(localStorage.getItem(LS_KEY) || JSON.stringify({ opportunities: [], contacts: [], tasks: [], movements: [], imports: [] }));
         all[key] = all[key] || [];
         const exists = all[key].some((x) => x.id === item.id);
         all[key] = exists ? all[key].map((x) => (x.id === item.id ? item : x)) : [item, ...all[key]];
@@ -180,7 +181,7 @@
       if (error) throw error;
     },
     async wipe() {
-      if (!CLOUD) { localStorage.setItem(LS_KEY, JSON.stringify({ opportunities: [], contacts: [], tasks: [], movements: [] })); return; }
+      if (!CLOUD) { localStorage.setItem(LS_KEY, JSON.stringify({ opportunities: [], contacts: [], tasks: [], movements: [], imports: [] })); return; }
       const { error } = await supa.from("records").delete().neq("id", "00000000-0000-0000-0000-000000000000");
       if (error) throw error;
     },
@@ -248,7 +249,7 @@
   function App() {
     const [authed, setAuthed] = useState(!CLOUD);
     const [checking, setChecking] = useState(CLOUD);
-    const [data, setData] = useState({ opportunities: [], contacts: [], tasks: [], movements: [] });
+    const [data, setData] = useState({ opportunities: [], contacts: [], tasks: [], movements: [], imports: [] });
     const [loading, setLoading] = useState(true);
     const [tab, setTab] = useState("inicio");
     const [search, setSearch] = useState("");
@@ -328,7 +329,7 @@
         <main className="mx-auto max-w-7xl px-5 py-6">
           {tab === "inicio"     && <Dashboard data={data} setTab={setTab} />}
           {tab === "tablero"    && <Pipeline data={data} upsert={upsert} remove={remove} logMove={logMove} />}
-          {tab === "basedatos"  && <BaseDatos />}
+          {tab === "basedatos"  && <BaseDatos data={data} upsert={upsert} setTab={setTab} />}
           {tab === "leads"      && <Contacts data={data} upsert={upsert} remove={remove} search={search} setSearch={setSearch} />}
           {tab === "tareas"     && <Tasks data={data} upsert={upsert} remove={remove} />}
           {tab === "calendario" && <CalendarView data={data} />}
@@ -471,6 +472,7 @@
           </div>
           <p className="mt-2 text-[10px] leading-relaxed text-slate-400">Dato histórico: cuenta solo movimientos generados por acción dentro del CRM. Una tarjeta creada directo en una etapa no suma al tramo previo.</p>
         </div>
+
       </div>
     );
   }
@@ -479,26 +481,326 @@
   /* ----------------------------------------------------------------- */
   /*  Base de Datos (placeholder — el motor de importación llega en F2)*/
   /* ----------------------------------------------------------------- */
-  function BaseDatos() {
+  /* ----------------------------------------------------------------- */
+  /*  Base de Datos: importación de Excel → cribado → Leads            */
+  /* ----------------------------------------------------------------- */
+  // Detección automática de columnas por sinónimos en el encabezado.
+  const COL_HINTS = {
+    nombre:    ["nom_estab", "nombre", "razon", "razón", "establecimiento", "empresa", "negocio"],
+    giro:      ["nombre_act", "actividad", "giro", "scian", "clase_actividad", "codigo_act"],
+    empleados: ["per_ocu", "personal", "ocupado", "empleados", "estrato", "tamaño", "tamano"],
+    telefono:  ["telefono", "teléfono", "tel", "phone", "celular", "movil", "móvil", "contacto_tel"],
+    correo:    ["correoelec", "correo", "email", "e-mail", "mail"],
+    municipio: ["municipio", "mun", "localidad", "ciudad"],
+    direccion: ["calle", "direccion", "dirección", "domicilio", "ubicacion", "ubicación"],
+  };
+  const norm = (s) => String(s == null ? "" : s).toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").trim();
+  const detectarColumna = (campo, headers) => {
+    const hints = COL_HINTS[campo] || [];
+    for (const h of hints) { const found = headers.find((col) => norm(col) === norm(h)); if (found) return found; }
+    for (const h of hints) { const found = headers.find((col) => norm(col).includes(norm(h))); if (found) return found; }
+    return "";
+  };
+  // Interpreta el "personal ocupado" de DENUE (rangos de texto) a un rango numérico [min,max].
+  const parseEstrato = (txt) => {
+    const s = norm(txt);
+    if (!s) return null;
+    const nums = (s.match(/\d+/g) || []).map(Number);
+    if (s.includes("y mas") || s.includes("y más") || s.includes("251") || s.includes("o mas")) { return { min: nums[0] || 251, max: 99999 }; }
+    if (nums.length >= 2) return { min: nums[0], max: nums[1] };
+    if (nums.length === 1) return { min: nums[0], max: nums[0] };
+    return null;
+  };
+
+  function BaseDatos({ data, upsert, setTab }) {
+    const [paso, setPaso] = useState("inicio"); // inicio | mapeo | revision
+    const [fileName, setFileName] = useState("");
+    const [headers, setHeaders] = useState([]);
+    const [rows, setRows] = useState([]);
+    const [mapeo, setMapeo] = useState({ nombre: "", giro: "", empleados: "", telefono: "", correo: "", municipio: "", direccion: "" });
+    const [driveLink, setDriveLink] = useState("");
+    const [empMin, setEmpMin] = useState(20);
+    const [empMax, setEmpMax] = useState(300);
+    const [girosSel, setGirosSel] = useState({});   // giro -> bool (aceptado)
+    const [procesado, setProcesado] = useState(null); // { auto, revision, descartados, duplicados }
+    const [revSel, setRevSel] = useState({});       // idx -> bool (aprobar de la zona de revisión)
+    const [err, setErr] = useState("");
+    const fileRef = React.useRef(null);
+
+    const reset = () => { setPaso("inicio"); setFileName(""); setHeaders([]); setRows([]); setDriveLink(""); setProcesado(null); setRevSel({}); setGirosSel({}); setErr(""); if (fileRef.current) fileRef.current.value = ""; };
+
+    // Lee el Excel en memoria (no se persiste el crudo).
+    const onFile = (e) => {
+      const file = e.target.files[0];
+      if (!file) return;
+      setErr(""); setFileName(file.name);
+      const reader = new FileReader();
+      reader.onload = (ev) => {
+        try {
+          const wb = XLSX.read(ev.target.result, { type: "array" });
+          const ws = wb.Sheets[wb.SheetNames[0]];
+          const json = XLSX.utils.sheet_to_json(ws, { defval: "" });
+          if (!json.length) { setErr("El archivo está vacío o no tiene filas de datos."); return; }
+          const hs = Object.keys(json[0]);
+          setHeaders(hs);
+          setRows(json);
+          setMapeo({
+            nombre: detectarColumna("nombre", hs), giro: detectarColumna("giro", hs), empleados: detectarColumna("empleados", hs),
+            telefono: detectarColumna("telefono", hs), correo: detectarColumna("correo", hs),
+            municipio: detectarColumna("municipio", hs), direccion: detectarColumna("direccion", hs),
+          });
+          setPaso("mapeo");
+        } catch (ex) { console.error(ex); setErr("No pude leer el archivo. ¿Es un Excel válido (.xlsx)?"); }
+      };
+      reader.readAsArrayBuffer(file);
+    };
+
+    // Giros únicos detectados (para que el usuario elija cuáles aceptar).
+    const girosUnicos = useMemo(() => {
+      if (!mapeo.giro) return [];
+      const map = {};
+      rows.forEach((r) => { const g = String(r[mapeo.giro] || "").trim(); if (g) map[g] = (map[g] || 0) + 1; });
+      return Object.entries(map).map(([g, n]) => ({ giro: g, n })).sort((a, b) => b.n - a.n);
+    }, [rows, mapeo.giro]);
+
+    const irARevision = () => {
+      if (!mapeo.nombre) { setErr("Indica al menos la columna de Nombre del negocio."); return; }
+      if (!driveLink.trim()) { setErr("El link de Drive es obligatorio para registrar la carga."); return; }
+      // Inicializa giros: todos aceptados por defecto (el usuario desmarca los que no).
+      const init = {}; girosUnicos.forEach((g) => { init[g.giro] = true; });
+      setGirosSel(init);
+      setErr("");
+      procesar(init);
+      setPaso("revision");
+    };
+
+    // Aplica los 3 umbrales: auto a Leads / revisión / descarte.
+    const procesar = (girosAceptados) => {
+      const existentesTel = new Set(data.contacts.map((c) => norm(c.telefono)).filter(Boolean));
+      const existentesMail = new Set(data.contacts.map((c) => norm(c.email)).filter(Boolean));
+      const auto = [], revision = [], descartados = [];
+      let duplicados = 0;
+      const vistosTel = new Set(), vistosMail = new Set();
+
+      rows.forEach((r, i) => {
+        const nombre = String(r[mapeo.nombre] || "").trim();
+        if (!nombre) return;
+        const tel = mapeo.telefono ? String(r[mapeo.telefono] || "").trim() : "";
+        const mail = mapeo.correo ? String(r[mapeo.correo] || "").trim() : "";
+        const giro = mapeo.giro ? String(r[mapeo.giro] || "").trim() : "";
+        const empTxt = mapeo.empleados ? String(r[mapeo.empleados] || "").trim() : "";
+        const muni = mapeo.municipio ? String(r[mapeo.municipio] || "").trim() : "";
+
+        // Duplicado (contra Leads existentes o dentro del mismo archivo)
+        const nTel = norm(tel), nMail = norm(mail);
+        const dupExist = (nTel && existentesTel.has(nTel)) || (nMail && existentesMail.has(nMail));
+        const dupInterno = (nTel && vistosTel.has(nTel)) || (nMail && vistosMail.has(nMail));
+        if (dupExist || dupInterno) { duplicados++; return; }
+        if (nTel) vistosTel.add(nTel); if (nMail) vistosMail.add(nMail);
+
+        const lead = { nombre, telefono: tel, correo: mail, giro, empTxt, municipio: muni, tipo: "privada" };
+
+        // Criterio giro
+        const giroOK = !giro || girosAceptados[giro] !== false;
+        if (giro && girosAceptados[giro] === false) { descartados.push({ ...lead, motivo: "Giro excluido" }); return; }
+        // Criterio contacto
+        const tieneTel = !!tel, tieneMail = !!mail;
+        if (!tieneTel && !tieneMail) { descartados.push({ ...lead, motivo: "Sin datos de contacto" }); return; }
+        // Criterio tamaño
+        const rango = parseEstrato(empTxt);
+        const tamOK = !rango ? null : (rango.max >= empMin && rango.min <= empMax);
+
+        // Decisión de umbral
+        const completo = tieneTel && tieneMail;
+        if (completo && giroOK && tamOK === true) { auto.push({ ...lead, motivo: "Cumple todo" }); }
+        else { // a revisión, con la razón de la duda
+          const dudas = [];
+          if (!completo) dudas.push(tieneTel ? "sin correo" : "sin teléfono");
+          if (tamOK === null) dudas.push("tamaño no detectado");
+          if (tamOK === false) dudas.push("fuera de rango de empleados");
+          revision.push({ ...lead, motivo: dudas.join(" · ") || "revisar" });
+        }
+      });
+      setProcesado({ auto, revision, descartados, duplicados });
+      // Por defecto, los de revisión NO van seleccionados (el usuario decide).
+      const rs = {}; revision.forEach((_, i) => { rs[i] = false; }); setRevSel(rs);
+    };
+
+    // Reprocesa al cambiar giros / rango (en vivo dentro de revisión).
+    const reprocesar = () => procesar(girosSel);
+
+    const confirmarImport = () => {
+      if (!procesado) return;
+      const loteId = uid();
+      const aprobadosRev = procesado.revision.filter((_, i) => revSel[i]);
+      const todos = [...procesado.auto, ...aprobadosRev];
+      todos.forEach((l) => {
+        upsert("contacts", { id: uid(), nombre: l.nombre, empresa: l.nombre, puesto: "", email: l.correo || "", telefono: l.telefono || "", tipo: l.tipo || "privada", giro: l.giro || "", municipio: l.municipio || "", estado: "activo", lote: loteId, notas: "" });
+      });
+      upsert("imports", { id: loteId, archivo: fileName, fecha: new Date().toISOString(), driveLink: driveLink.trim(), total: rows.length, importados: todos.length, auto: procesado.auto.length, revisados: aprobadosRev.length, duplicados: procesado.duplicados, descartados: procesado.descartados.length });
+      reset();
+      setTab("leads");
+    };
+
+    const registros = (data.imports || []).slice().sort((a, b) => (b.fecha || "").localeCompare(a.fecha || ""));
+
+    // ----- Render -----
     return (
-      <div className="space-y-4">
-        <div>
-          <h2 className="text-xl font-bold tracking-tight text-slate-900">Base de Datos</h2>
-          <p className="mt-0.5 text-sm text-slate-500">Importación de bases y cribado a Leads.</p>
-        </div>
-        <div className="grid gap-4 lg:grid-cols-2">
-          <div className="rounded-2xl border border-dashed border-slate-300 bg-white p-8 text-center">
-            <div className="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-xl" style={{ backgroundColor: BRAND.teal + "14" }}><Icon n="database" s={22} style={{ color: BRAND.teal }} /></div>
-            <h3 className="text-sm font-semibold text-slate-700">Importar Excel</h3>
-            <p className="mx-auto mt-1 max-w-xs text-xs text-slate-400">Aquí subirás un Excel, el sistema detectará columnas, filtrará por contacto y giro, y depositará los Leads aprobados.</p>
-            <span className="mt-3 inline-block rounded-full bg-slate-100 px-3 py-1 text-[11px] font-medium text-slate-500">Disponible en la siguiente fase</span>
+      <div className="space-y-5">
+        <div className="flex items-center justify-between">
+          <div>
+            <h2 className="text-xl font-bold tracking-tight text-slate-900">Base de Datos</h2>
+            <p className="mt-0.5 text-sm text-slate-500">Importa un Excel, críbalo y envía los Leads aprobados.</p>
           </div>
-          <div className="rounded-2xl border border-slate-200 bg-white p-6">
-            <h3 className="mb-1 text-sm font-semibold text-slate-700">Registro de cargas</h3>
-            <p className="mb-4 text-xs text-slate-400">Historial de bases procesadas: archivo, fecha y link de Drive.</p>
-            <div className="rounded-xl border border-slate-100 bg-slate-50/60 py-10 text-center text-xs text-slate-300">Aún no hay cargas registradas.</div>
-          </div>
+          {paso !== "inicio" && <button onClick={reset} className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm font-medium text-slate-500 hover:bg-slate-50">Cancelar</button>}
         </div>
+
+        {err && <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-600">{err}</div>}
+
+        {/* PASO 1: subir archivo */}
+        {paso === "inicio" && (
+          <div className="grid gap-4 lg:grid-cols-2">
+            <div className="rounded-2xl border-2 border-dashed border-slate-300 bg-white p-8 text-center transition-colors hover:border-[#0A7E6B]/50">
+              <div className="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-xl" style={{ backgroundColor: BRAND.teal + "14" }}><Icon n="database" s={22} style={{ color: BRAND.teal }} /></div>
+              <h3 className="text-sm font-semibold text-slate-700">Importar Excel</h3>
+              <p className="mx-auto mt-1 max-w-xs text-xs text-slate-400">Sube un .xlsx (ej. exportación de DENUE). El sistema detecta columnas, filtra y cría a Leads. El archivo no se almacena.</p>
+              <input ref={fileRef} type="file" accept=".xlsx,.xls" onChange={onFile} className="hidden" id="excel-input" />
+              <label htmlFor="excel-input" className="mt-4 inline-flex cursor-pointer items-center gap-1.5 rounded-lg px-4 py-2 text-sm font-medium text-white bg-[#0A7E6B] hover:bg-[#096353]"><Icon n="download" s={14} /> Elegir archivo</label>
+            </div>
+            <div className="rounded-2xl border border-slate-200 bg-white p-6">
+              <h3 className="mb-1 text-sm font-semibold text-slate-700">Registro de cargas</h3>
+              <p className="mb-4 text-xs text-slate-400">Historial de bases procesadas.</p>
+              {registros.length === 0 ? <div className="rounded-xl border border-slate-100 bg-slate-50/60 py-10 text-center text-xs text-slate-300">Aún no hay cargas registradas.</div> : (
+                <div className="space-y-2">
+                  {registros.map((r) => (
+                    <div key={r.id} className="rounded-xl border border-slate-100 bg-slate-50/60 p-3">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="truncate text-sm font-medium text-slate-700">{r.archivo}</span>
+                        <span className="tnum flex-shrink-0 text-[11px] text-slate-400">{fmtDate((r.fecha || "").slice(0, 10))}</span>
+                      </div>
+                      <p className="tnum mt-1 text-[11px] text-slate-500">{r.importados} importados · {r.duplicados} duplicados · {r.descartados} descartados (de {r.total})</p>
+                      {r.driveLink && <a href={r.driveLink} target="_blank" rel="noopener noreferrer" className="mt-1 inline-flex items-center gap-1 text-[11px] font-medium text-[#0A7E6B] hover:underline"><Icon n="download" s={11} /> Ver en Drive</a>}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* PASO 2: mapeo de columnas + link drive */}
+        {paso === "mapeo" && (
+          <div className="space-y-4">
+            <div className="rounded-2xl border border-slate-200 bg-white p-5">
+              <div className="mb-3 flex items-center gap-2"><Icon n="list" s={15} style={{ color: BRAND.teal }} /><h3 className="text-sm font-semibold text-slate-700">Confirma las columnas</h3><span className="ml-auto text-xs text-slate-400">{fileName} · {rows.length} filas</span></div>
+              <p className="mb-4 text-xs text-slate-400">Detecté automáticamente lo que pude. Ajusta si algo no coincide. Solo "Nombre" es obligatorio.</p>
+              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                {[["nombre","Nombre del negocio *"],["telefono","Teléfono"],["correo","Correo"],["giro","Giro / actividad"],["empleados","Personal ocupado"],["municipio","Municipio"]].map(([campo, label]) => (
+                  <Field key={campo} label={label}>
+                    <select className={inputCls} value={mapeo[campo]} onChange={(e) => setMapeo((m) => ({ ...m, [campo]: e.target.value }))}>
+                      <option value="">— Ninguna —</option>
+                      {headers.map((h) => <option key={h} value={h}>{h}</option>)}
+                    </select>
+                  </Field>
+                ))}
+              </div>
+            </div>
+            <div className="rounded-2xl border border-slate-200 bg-white p-5">
+              <Field label="Link del archivo en Google Drive * (queda como referencia del lote)">
+                <input className={inputCls} value={driveLink} onChange={(e) => setDriveLink(e.target.value)} placeholder="https://drive.google.com/..." />
+              </Field>
+            </div>
+            <div className="flex justify-end">
+              <button onClick={irARevision} className="flex items-center gap-1.5 rounded-lg px-4 py-2 text-sm font-medium text-white bg-[#0A7E6B] hover:bg-[#096353]">Filtrar y revisar <Icon n="arrowR" s={14} /></button>
+            </div>
+          </div>
+        )}
+
+        {/* PASO 3: revisión */}
+        {paso === "revision" && procesado && (
+          <div className="space-y-4">
+            {/* Controles de criterio (reprocesa en vivo) */}
+            <div className="rounded-2xl border border-slate-200 bg-white p-5">
+              <h3 className="mb-3 text-sm font-semibold text-slate-700">Criterios de filtrado</h3>
+              <div className="flex flex-wrap items-end gap-4">
+                <Field label="Empleados mín."><input type="number" className={inputCls + " w-24"} value={empMin} onChange={(e) => setEmpMin(Number(e.target.value) || 0)} /></Field>
+                <Field label="Empleados máx."><input type="number" className={inputCls + " w-24"} value={empMax} onChange={(e) => setEmpMax(Number(e.target.value) || 0)} /></Field>
+                <button onClick={reprocesar} className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-600 hover:bg-slate-50">Aplicar criterios</button>
+              </div>
+              {girosUnicos.length > 0 && (
+                <div className="mt-4">
+                  <p className="mb-2 text-xs font-medium text-slate-500">Giros a aceptar ({girosUnicos.length} detectados · desmarca los que no apliquen):</p>
+                  <div className="max-h-44 space-y-1 overflow-y-auto rounded-lg border border-slate-100 bg-slate-50/50 p-2">
+                    {girosUnicos.map((g) => (
+                      <label key={g.giro} className="flex cursor-pointer items-center gap-2 rounded px-2 py-1 text-xs hover:bg-white">
+                        <input type="checkbox" className="h-3.5 w-3.5 accent-[#0A7E6B]" checked={girosSel[g.giro] !== false} onChange={(e) => setGirosSel((s) => ({ ...s, [g.giro]: e.target.checked }))} />
+                        <span className="flex-1 text-slate-700">{g.giro}</span>
+                        <span className="tnum text-slate-400">{g.n}</span>
+                      </label>
+                    ))}
+                  </div>
+                  <button onClick={reprocesar} className="mt-2 text-xs font-medium text-[#0A7E6B] hover:underline">Recalcular con estos giros</button>
+                </div>
+              )}
+            </div>
+
+            {/* Resumen */}
+            <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+              {[["Pasan automático", procesado.auto.length, BRAND.teal],["A revisión", procesado.revision.length, BRAND.orange],["Descartados", procesado.descartados.length, "#64748b"],["Duplicados ignorados", procesado.duplicados, "#94a3b8"]].map(([l, v, c]) => (
+                <div key={l} className="rounded-xl border border-slate-200 bg-white p-3">
+                  <p className="tnum text-2xl font-bold tracking-tight" style={{ color: c }}>{v}</p>
+                  <p className="text-[11px] text-slate-500">{l}</p>
+                </div>
+              ))}
+            </div>
+
+            {/* Zona de revisión: el usuario marca cuáles aprobar */}
+            {procesado.revision.length > 0 && (
+              <div className="rounded-2xl border border-slate-200 bg-white p-5">
+                <div className="mb-3 flex items-center justify-between">
+                  <h3 className="text-sm font-semibold text-slate-700">Zona de revisión · decide cuáles incluir</h3>
+                  <div className="flex gap-2">
+                    <button onClick={() => { const rs = {}; procesado.revision.forEach((_, i) => rs[i] = true); setRevSel(rs); }} className="text-xs font-medium text-[#0A7E6B] hover:underline">Marcar todos</button>
+                    <button onClick={() => setRevSel({})} className="text-xs font-medium text-slate-400 hover:underline">Ninguno</button>
+                  </div>
+                </div>
+                <div className="max-h-72 space-y-1 overflow-y-auto">
+                  {procesado.revision.map((l, i) => (
+                    <label key={i} className="flex cursor-pointer items-center gap-3 rounded-lg border border-slate-100 px-3 py-2 text-sm hover:bg-slate-50">
+                      <input type="checkbox" className="h-4 w-4 accent-[#0A7E6B]" checked={!!revSel[i]} onChange={(e) => setRevSel((s) => ({ ...s, [i]: e.target.checked }))} />
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate font-medium text-slate-700">{l.nombre}</p>
+                        <p className="truncate text-xs text-slate-400">{[l.telefono, l.correo, l.giro].filter(Boolean).join(" · ")}</p>
+                      </div>
+                      <span className="flex-shrink-0 rounded-full bg-orange-50 px-2 py-0.5 text-[10px] font-medium text-orange-600">{l.motivo}</span>
+                    </label>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Preview de los que pasan automático */}
+            {procesado.auto.length > 0 && (
+              <details className="rounded-2xl border border-slate-200 bg-white p-5">
+                <summary className="cursor-pointer text-sm font-semibold text-slate-700">Ver {procesado.auto.length} que pasan automático</summary>
+                <div className="mt-3 max-h-60 space-y-1 overflow-y-auto">
+                  {procesado.auto.map((l, i) => (
+                    <div key={i} className="flex items-center gap-3 rounded-lg border border-slate-100 px-3 py-2 text-sm">
+                      <Icon n="circleCheck" s={15} className="flex-shrink-0 text-[#0A7E6B]" />
+                      <div className="min-w-0 flex-1"><p className="truncate font-medium text-slate-700">{l.nombre}</p><p className="truncate text-xs text-slate-400">{[l.telefono, l.correo, l.giro].filter(Boolean).join(" · ")}</p></div>
+                    </div>
+                  ))}
+                </div>
+              </details>
+            )}
+
+            {/* Confirmar */}
+            <div className="flex items-center justify-between rounded-2xl border border-[#0A7E6B]/25 bg-[#0A7E6B]/5 p-4">
+              <p className="text-sm text-slate-600">Se importarán <span className="font-bold text-slate-800">{procesado.auto.length + procesado.revision.filter((_, i) => revSel[i]).length}</span> leads (automáticos + los que marcaste).</p>
+              <button onClick={confirmarImport} className="flex items-center gap-1.5 rounded-lg px-4 py-2 text-sm font-medium text-white bg-[#0A7E6B] hover:bg-[#096353]"><Icon n="check" s={15} /> Importar a Leads</button>
+            </div>
+          </div>
+        )}
       </div>
     );
   }
@@ -854,28 +1156,49 @@
   /* ----------------------------------------------------------------- */
   function Contacts({ data, upsert, remove, search, setSearch }) {
     const [editing, setEditing] = useState(null);
-    const empty = { id: null, empresa: "", nombre: "", puesto: "", email: "", telefono: "", tipo: "privada", notas: "" };
-    const filtered = data.contacts.filter((c) => (c.nombre + " " + c.empresa + " " + c.email).toLowerCase().includes(search.toLowerCase()));
-    // Promueve un Lead a Prospecto: crea una tarjeta en el tablero (registro de movimiento incluido).
+    const [verPapelera, setVerPapelera] = useState(false);
+    const empty = { id: null, empresa: "", nombre: "", puesto: "", email: "", telefono: "", tipo: "privada", giro: "", municipio: "", estado: "activo", notas: "" };
+    // Activos = sin estado o estado "activo". Papelera = estado "descartado".
+    const esActivo = (c) => (c.estado || "activo") === "activo";
+    const base = data.contacts.filter((c) => verPapelera ? c.estado === "descartado" : esActivo(c));
+    const q = search.toLowerCase();
+    const filtered = base.filter((c) => ((c.nombre || "") + " " + (c.empresa || "") + " " + (c.email || "") + " " + (c.giro || "") + " " + (c.municipio || "")).toLowerCase().includes(q));
+    const nActivos = data.contacts.filter(esActivo).length;
+    const nPapelera = data.contacts.filter((c) => c.estado === "descartado").length;
+
+    const descartar = (c) => upsert("contacts", { ...c, estado: "descartado", descartadoEn: new Date().toISOString() });
+    const restaurar = (c) => upsert("contacts", { ...c, estado: "activo" });
+
+    // Promueve un Lead a Prospecto y lo retira de la lista activa de leads.
     const contactar = (c) => {
       const oid = uid();
-      upsert("opportunities", { id: oid, nombre: "Prospecto · " + (c.empresa || c.nombre), empresa: c.empresa || "", contacto: c.nombre || "", tipo: c.tipo || "privada", origen: "", valor: 0, etapa: "prospecto", inicio: todayISO(), cierre: todayISO(), cierreAbierto: false, responsable: "", notas: "", acuerdos: "", pendientes: "", cierresPrevios: 0 });
+      upsert("opportunities", { id: oid, nombre: "Prospecto · " + (c.empresa || c.nombre), empresa: c.empresa || c.nombre || "", contacto: c.nombre || "", tipo: c.tipo || "privada", origen: "", valor: 0, etapa: "prospecto", inicio: todayISO(), cierre: todayISO(), cierreAbierto: false, responsable: "", notas: c.giro ? "Giro: " + c.giro : "", acuerdos: "", pendientes: "", cierresPrevios: 0 });
       upsert("movements", { id: uid(), oppId: oid, oppNombre: "Prospecto · " + (c.empresa || c.nombre), empresa: c.empresa || "", from: "lead", to: "prospecto", tipo: "avance", comentario: "Contactado desde Leads", monto: 0, fecha: new Date().toISOString() });
+      upsert("contacts", { ...c, estado: "convertido" });
     };
+
     return (
       <div className="space-y-4">
-        <div>
-          <h2 className="text-xl font-bold tracking-tight text-slate-900">Leads</h2>
-          <p className="mt-0.5 text-sm text-slate-500">Universo de contactos. Al contactar uno, sube al Tablero como Prospecto.</p>
+        <div className="flex items-end justify-between">
+          <div>
+            <h2 className="text-xl font-bold tracking-tight text-slate-900">{verPapelera ? "Papelera de Leads" : "Leads"}</h2>
+            <p className="mt-0.5 text-sm text-slate-500">{verPapelera ? "Leads descartados. Puedes restaurarlos." : "Universo de contactos. Al contactar uno, sube al Tablero como Prospecto."}</p>
+          </div>
+          <button onClick={() => { setVerPapelera(!verPapelera); }} className={"flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-sm font-medium " + (verPapelera ? "border-[#0A7E6B] text-[#0A7E6B]" : "border-slate-200 bg-white text-slate-500 hover:bg-slate-50")}>
+            <Icon n="trash" s={14} /> {verPapelera ? "Volver a Leads" : "Papelera"}{nPapelera > 0 && <span className="tnum rounded-full bg-slate-100 px-1.5 text-[10px]">{nPapelera}</span>}
+          </button>
         </div>
         <div className="flex items-center justify-between gap-3">
           <div className="relative max-w-xs flex-1">
             <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"><Icon n="search" s={15} /></span>
             <input className={inputCls + " pl-9"} placeholder="Buscar lead…" value={search} onChange={(e) => setSearch(e.target.value)} />
           </div>
-          <button onClick={() => setEditing(empty)} className="flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-medium text-white bg-[#0A7E6B] hover:bg-[#096353]"><Icon n="plus" s={14} /> Lead</button>
+          <div className="flex items-center gap-3">
+            {!verPapelera && <span className="text-sm text-slate-400"><span className="tnum font-semibold text-slate-600">{nActivos}</span> activos</span>}
+            {!verPapelera && <button onClick={() => setEditing(empty)} className="flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-medium text-white bg-[#0A7E6B] hover:bg-[#096353]"><Icon n="plus" s={14} /> Lead</button>}
+          </div>
         </div>
-        {filtered.length === 0 ? <div className="rounded-2xl border border-dashed border-slate-200 py-16 text-center text-sm text-slate-400">Sin leads todavía. Agrega el primero o impórtalos desde Base de Datos (próxima fase).</div> : (
+        {filtered.length === 0 ? <div className="rounded-2xl border border-dashed border-slate-200 py-16 text-center text-sm text-slate-400">{verPapelera ? "La papelera está vacía." : "Sin leads todavía. Agrega el primero o impórtalos desde Base de Datos."}</div> : (
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
             {filtered.map((c) => {
               const t = typeOf(c.tipo);
@@ -886,12 +1209,20 @@
                     <Badge color={t.color} bg={t.bg}>{t.label.split(" ")[0]}</Badge>
                   </div>
                   <p className="mt-3 cursor-pointer text-sm font-semibold text-slate-800" onClick={() => setEditing(c)}>{c.nombre || "Sin nombre"}</p>
-                  <p className="text-xs text-slate-500">{c.puesto}{c.puesto && c.empresa ? " · " : ""}{c.empresa}</p>
+                  {c.giro && <p className="truncate text-xs text-slate-500" title={c.giro}>{c.giro}</p>}
+                  {c.municipio && <p className="text-[11px] text-slate-400">{c.municipio}</p>}
                   <div className="mt-3 space-y-1 border-t border-slate-100 pt-3">
                     {c.email && <p className="flex items-center gap-1.5 text-xs text-slate-500"><Icon n="mail" s={12} /> {c.email}</p>}
                     {c.telefono && <p className="flex items-center gap-1.5 text-xs text-slate-500"><Icon n="phone" s={12} /> {c.telefono}</p>}
                   </div>
-                  <button onClick={() => contactar(c)} className="mt-3 flex w-full items-center justify-center gap-1.5 rounded-lg border border-[#0A7E6B]/30 bg-[#0A7E6B]/5 py-1.5 text-xs font-semibold text-[#0A7E6B] hover:bg-[#0A7E6B]/10"><Icon n="arrowR" s={13} /> Contactado → Prospecto</button>
+                  {verPapelera ? (
+                    <button onClick={() => restaurar(c)} className="mt-3 flex w-full items-center justify-center gap-1.5 rounded-lg border border-[#0A7E6B]/30 bg-[#0A7E6B]/5 py-1.5 text-xs font-semibold text-[#0A7E6B] hover:bg-[#0A7E6B]/10"><Icon n="refresh" s={13} /> Restaurar</button>
+                  ) : (
+                    <div className="mt-3 flex gap-2">
+                      <button onClick={() => contactar(c)} className="flex flex-1 items-center justify-center gap-1.5 rounded-lg border border-[#0A7E6B]/30 bg-[#0A7E6B]/5 py-1.5 text-xs font-semibold text-[#0A7E6B] hover:bg-[#0A7E6B]/10"><Icon n="arrowR" s={13} /> Contactado</button>
+                      <button onClick={() => descartar(c)} title="Mover a papelera" className="flex items-center justify-center rounded-lg border border-slate-200 px-2 py-1.5 text-slate-400 hover:bg-slate-50 hover:text-red-500"><Icon n="trash" s={13} /></button>
+                    </div>
+                  )}
                 </div>
               );
             })}
@@ -905,24 +1236,28 @@
     const [f, setF] = useState({ ...c });
     const set = (k, v) => setF((p) => ({ ...p, [k]: v }));
     return (
-      <Modal title={c.id ? "Editar contacto" : "Nuevo contacto"} onClose={onClose}>
+      <Modal title={c.id ? "Editar lead" : "Nuevo lead"} onClose={onClose}>
         <div className="space-y-3">
           <div className="grid grid-cols-2 gap-3">
-            <Field label="Nombre *"><input className={inputCls} value={f.nombre} onChange={(e) => set("nombre", e.target.value)} autoFocus /></Field>
-            <Field label="Puesto"><input className={inputCls} value={f.puesto} onChange={(e) => set("puesto", e.target.value)} /></Field>
+            <Field label="Nombre *"><input className={inputCls} value={f.nombre || ""} onChange={(e) => set("nombre", e.target.value)} autoFocus /></Field>
+            <Field label="Puesto"><input className={inputCls} value={f.puesto || ""} onChange={(e) => set("puesto", e.target.value)} /></Field>
           </div>
-          <Field label="Empresa"><input className={inputCls} value={f.empresa} onChange={(e) => set("empresa", e.target.value)} /></Field>
+          <Field label="Empresa"><input className={inputCls} value={f.empresa || ""} onChange={(e) => set("empresa", e.target.value)} /></Field>
           <div className="grid grid-cols-2 gap-3">
-            <Field label="Email"><input className={inputCls} value={f.email} onChange={(e) => set("email", e.target.value)} /></Field>
-            <Field label="Teléfono"><input className={inputCls} value={f.telefono} onChange={(e) => set("telefono", e.target.value)} /></Field>
+            <Field label="Email"><input className={inputCls} value={f.email || ""} onChange={(e) => set("email", e.target.value)} /></Field>
+            <Field label="Teléfono"><input className={inputCls} value={f.telefono || ""} onChange={(e) => set("telefono", e.target.value)} /></Field>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="Giro / actividad"><input className={inputCls} value={f.giro || ""} onChange={(e) => set("giro", e.target.value)} /></Field>
+            <Field label="Municipio"><input className={inputCls} value={f.municipio || ""} onChange={(e) => set("municipio", e.target.value)} /></Field>
           </div>
           <Field label="Tipo de cliente"><select className={inputCls} value={f.tipo} onChange={(e) => set("tipo", e.target.value)}>{CLIENT_TYPES.map((t) => <option key={t.id} value={t.id}>{t.label}</option>)}</select></Field>
-          <Field label="Notas"><textarea rows={2} className={inputCls} value={f.notas} onChange={(e) => set("notas", e.target.value)} /></Field>
+          <Field label="Notas"><textarea rows={2} className={inputCls} value={f.notas || ""} onChange={(e) => set("notas", e.target.value)} /></Field>
           <div className="flex items-center justify-between pt-1">
             {c.id ? <button onClick={() => onDelete(c.id)} className="flex items-center gap-1.5 rounded-lg px-3 py-2 text-sm font-medium text-red-600 hover:bg-red-50"><Icon n="trash" s={14} /> Eliminar</button> : <span />}
             <div className="flex gap-2">
               <button onClick={onClose} className="rounded-lg px-4 py-2 text-sm font-medium text-slate-500 hover:bg-slate-100">Cancelar</button>
-              <button onClick={() => f.nombre.trim() && onSave({ ...f, id: f.id || uid() })} className="rounded-lg bg-[#0A7E6B] px-4 py-2 text-sm font-medium text-white hover:bg-[#096353]">Guardar</button>
+              <button onClick={() => f.nombre.trim() && onSave({ ...f, id: f.id || uid(), estado: f.estado || "activo" })} className="rounded-lg bg-[#0A7E6B] px-4 py-2 text-sm font-medium text-white hover:bg-[#096353]">Guardar</button>
             </div>
           </div>
         </div>
