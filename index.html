@@ -529,15 +529,22 @@
 
     const reset = () => { setPaso("inicio"); setFileName(""); setHeaders([]); setRows([]); setDriveLink(""); setProcesado(null); setRevSel({}); setGirosSel({}); setErr(""); if (fileRef.current) fileRef.current.value = ""; };
 
-    // Lee el Excel en memoria (no se persiste el crudo).
+    // Lee el archivo en memoria (no se persiste el crudo). Soporta CSV y Excel.
     const onFile = (e) => {
       const file = e.target.files[0];
       if (!file) return;
       setErr(""); setFileName(file.name);
+      const esCSV = /\.csv$/i.test(file.name);
       const reader = new FileReader();
       reader.onload = (ev) => {
         try {
-          const wb = XLSX.read(ev.target.result, { type: "array" });
+          let wb;
+          if (esCSV) {
+            // CSV de DENUE suele venir en Latin1 (Windows-1252). codepage 1252 conserva acentos/ñ.
+            wb = XLSX.read(ev.target.result, { type: "array", codepage: 1252, raw: false });
+          } else {
+            wb = XLSX.read(ev.target.result, { type: "array" });
+          }
           const ws = wb.Sheets[wb.SheetNames[0]];
           const json = XLSX.utils.sheet_to_json(ws, { defval: "" });
           if (!json.length) { setErr("El archivo está vacío o no tiene filas de datos."); return; }
@@ -550,7 +557,7 @@
             municipio: detectarColumna("municipio", hs), direccion: detectarColumna("direccion", hs),
           });
           setPaso("mapeo");
-        } catch (ex) { console.error(ex); setErr("No pude leer el archivo. ¿Es un Excel válido (.xlsx)?"); }
+        } catch (ex) { console.error(ex); setErr("No pude leer el archivo. ¿Es un CSV o Excel válido?"); }
       };
       reader.readAsArrayBuffer(file);
     };
@@ -663,8 +670,8 @@
             <div className="rounded-2xl border-2 border-dashed border-slate-300 bg-white p-8 text-center transition-colors hover:border-[#0A7E6B]/50">
               <div className="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-xl" style={{ backgroundColor: BRAND.teal + "14" }}><Icon n="database" s={22} style={{ color: BRAND.teal }} /></div>
               <h3 className="text-sm font-semibold text-slate-700">Importar Excel</h3>
-              <p className="mx-auto mt-1 max-w-xs text-xs text-slate-400">Sube un .xlsx (ej. exportación de DENUE). El sistema detecta columnas, filtra y cría a Leads. El archivo no se almacena.</p>
-              <input ref={fileRef} type="file" accept=".xlsx,.xls" onChange={onFile} className="hidden" id="excel-input" />
+              <p className="mx-auto mt-1 max-w-xs text-xs text-slate-400">Sube un .csv o .xlsx (ej. exportación de DENUE). El sistema detecta columnas, filtra y cría a Leads. El archivo no se almacena.</p>
+              <input ref={fileRef} type="file" accept=".xlsx,.xls,.csv" onChange={onFile} className="hidden" id="excel-input" />
               <label htmlFor="excel-input" className="mt-4 inline-flex cursor-pointer items-center gap-1.5 rounded-lg px-4 py-2 text-sm font-medium text-white bg-[#0A7E6B] hover:bg-[#096353]"><Icon n="download" s={14} /> Elegir archivo</label>
             </div>
             <div className="rounded-2xl border border-slate-200 bg-white p-6">
