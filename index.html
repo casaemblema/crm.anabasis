@@ -296,6 +296,7 @@
     const tabs = [
       { id: "inicio",    label: "Inicio",       n: "dashboard" },
       { id: "tablero",   label: "Tablero",      n: "kanban" },
+      { id: "indicadores",label: "Indicadores", n: "trending" },
       { id: "basedatos", label: "Base de Datos",n: "database" },
       { id: "leads",     label: "Leads",        n: "users" },
       { id: "tareas",    label: "Tareas",       n: "check" },
@@ -332,6 +333,7 @@
         <main className="mx-auto max-w-7xl px-5 py-6">
           {tab === "inicio"     && <Dashboard data={data} setTab={setTab} />}
           {tab === "tablero"    && <Pipeline data={data} upsert={upsert} remove={remove} logMove={logMove} />}
+          {tab === "indicadores" && <Indicadores data={data} />}
           {tab === "basedatos"  && <BaseDatos data={data} upsert={upsert} setTab={setTab} />}
           {tab === "leads"      && <Contacts data={data} upsert={upsert} remove={remove} search={search} setSearch={setSearch} />}
           {tab === "tareas"     && <Tasks data={data} upsert={upsert} remove={remove} />}
@@ -480,6 +482,196 @@
     );
   }
   const Empty = ({ text }) => <div className="flex h-[140px] items-center justify-center text-sm text-slate-300">{text}</div>;
+
+  /* ----------------------------------------------------------------- */
+  /*  Indicadores: actividad y conversión por periodo (diario/sem/mes) */
+  /* ----------------------------------------------------------------- */
+  function Indicadores({ data }) {
+    const [marco, setMarco] = useState("semanal"); // diario | semanal | mensual
+
+    // Rango de fechas [desde, hasta) según el marco, en base a hoy.
+    const rango = useMemo(() => {
+      const now = new Date();
+      const hoy0 = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+      if (marco === "diario") {
+        const fin = new Date(hoy0); fin.setDate(fin.getDate() + 1);
+        return { desde: hoy0, hasta: fin, label: "Hoy" };
+      }
+      if (marco === "semanal") {
+        // Semana inicia lunes.
+        const dia = (hoy0.getDay() + 6) % 7; // 0 = lunes
+        const ini = new Date(hoy0); ini.setDate(ini.getDate() - dia);
+        const fin = new Date(ini); fin.setDate(fin.getDate() + 7);
+        return { desde: ini, hasta: fin, label: "Esta semana" };
+      }
+      const ini = new Date(now.getFullYear(), now.getMonth(), 1);
+      const fin = new Date(now.getFullYear(), now.getMonth() + 1, 1);
+      return { desde: ini, hasta: fin, label: "Este mes" };
+    }, [marco]);
+
+    const enRango = (iso) => { if (!iso) return false; const d = new Date(iso); return d >= rango.desde && d < rango.hasta; };
+
+    // --- Recolecta interacciones de la bitácora de todos los leads en el periodo ---
+    const m = useMemo(() => {
+      const contactos = data.contacts || [];
+      const movs = data.movements || [];
+
+      // Interacciones (de la bitácora) dentro del periodo
+      const interacciones = [];
+      contactos.forEach((c) => (c.bitacora || []).forEach((e) => { if (enRango(e.fecha)) interacciones.push(e); }));
+      const porCat = { Llamada: 0, Correo: 0, Presencial: 0, Otra: 0 };
+      interacciones.forEach((e) => { if (porCat[e.categoria] != null) porCat[e.categoria]++; else porCat.Otra++; });
+      const totalInter = interacciones.length;
+
+      // Movimientos del periodo (para el embudo de flujo)
+      const movsRango = movs.filter((x) => enRango(x.fecha));
+      const aProsp = movsRango.filter((x) => x.tipo === "avance" && x.to === "prospecto").length;
+      const aOportunidad = movsRango.filter((x) => x.tipo === "avance" && x.to === "oportunidad").length;
+      const aNegociacion = movsRango.filter((x) => x.tipo === "avance" && x.to === "negociacion").length;
+      const aCierre = movsRango.filter((x) => x.tipo === "ganada").length;
+
+      // Conversión por tipo de acción: categoría del movimiento lead->prospecto
+      const convPorCat = { Llamada: 0, Correo: 0, Presencial: 0, Otra: 0 };
+      movsRango.filter((x) => x.from === "lead" && x.to === "prospecto").forEach((x) => {
+        const cat = x.categoria || "Otra"; if (convPorCat[cat] != null) convPorCat[cat]++; else convPorCat.Otra++;
+      });
+
+      // Tendencia: actividad (interacciones) por sub-periodo
+      const tendencia = [];
+      if (marco === "diario") {
+        // Últimas 7 días (incluye hoy)
+        for (let i = 6; i >= 0; i--) { const d = new Date(rango.desde); d.setDate(d.getDate() - i); const d1 = new Date(d); d1.setDate(d1.getDate() + 1); const n = countInter(contactos, d, d1); tendencia.push({ label: d.toLocaleDateString("es-MX", { weekday: "short" }), n }); }
+      } else if (marco === "semanal") {
+        // Últimas 6 semanas
+        for (let i = 5; i >= 0; i--) { const ini = new Date(rango.desde); ini.setDate(ini.getDate() - i * 7); const fin = new Date(ini); fin.setDate(fin.getDate() + 7); const n = countInter(contactos, ini, fin); tendencia.push({ label: "S" + (6 - i), n }); }
+      } else {
+        // Últimos 6 meses
+        for (let i = 5; i >= 0; i--) { const ini = new Date(rango.desde.getFullYear(), rango.desde.getMonth() - i, 1); const fin = new Date(rango.desde.getFullYear(), rango.desde.getMonth() - i + 1, 1); const n = countInter(contactos, ini, fin); tendencia.push({ label: ini.toLocaleDateString("es-MX", { month: "short" }), n }); }
+      }
+
+      return { porCat, totalInter, aProsp, aOportunidad, aNegociacion, aCierre, convPorCat, tendencia };
+    }, [data, rango, marco]);
+
+    function countInter(contactos, desde, hasta) {
+      let n = 0; contactos.forEach((c) => (c.bitacora || []).forEach((e) => { if (e.fecha) { const d = new Date(e.fecha); if (d >= desde && d < hasta) n++; } })); return n;
+    }
+
+    const pct = (a, b) => (b > 0 ? Math.round((a / b) * 100) : null);
+    const acts = [
+      { label: "Llamadas", v: m.porCat.Llamada, n: "phone" },
+      { label: "Correos", v: m.porCat.Correo, n: "mail" },
+      { label: "Presenciales", v: m.porCat.Presencial, n: "users" },
+      { label: "Otras", v: m.porCat.Otra, n: "check" },
+    ];
+
+    // Embudo de flujo del periodo
+    const embudo = [
+      { label: "Interacciones", v: m.totalInter, color: "#7C93C7" },
+      { label: "→ Prospectos", v: m.aProsp, color: "#4A6299" },
+      { label: "→ Oportunidades", v: m.aOportunidad, color: "#2A4372" },
+      { label: "→ Negociaciones", v: m.aNegociacion, color: "#1B3A6B" },
+      { label: "→ Cierres", v: m.aCierre, color: "#152A4D" },
+    ];
+    const maxEmbudo = Math.max(1, ...embudo.map((e) => e.v));
+    const maxTend = Math.max(1, ...m.tendencia.map((t) => t.n));
+    const totalConv = m.convPorCat.Llamada + m.convPorCat.Correo + m.convPorCat.Presencial + m.convPorCat.Otra;
+
+    return (
+      <div className="space-y-6">
+        <div className="flex flex-wrap items-end justify-between gap-3">
+          <div>
+            <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-slate-400">Anabasis · CRM</p>
+            <h2 className="mt-0.5 text-xl font-bold tracking-tight text-slate-900">Indicadores comerciales</h2>
+            <p className="mt-0.5 text-sm text-slate-500">Actividad y conversión · <span className="font-medium text-slate-600">{rango.label}</span></p>
+          </div>
+          <div className="flex rounded-lg border border-slate-200 bg-white p-0.5">
+            {[["diario", "Diario"], ["semanal", "Semanal"], ["mensual", "Mensual"]].map(([id, lbl]) => (
+              <button key={id} onClick={() => setMarco(id)} className={"rounded-md px-3 py-1.5 text-xs font-medium transition-colors " + (marco === id ? "bg-[#1B3A6B] text-white" : "text-slate-500 hover:text-slate-800")}>{lbl}</button>
+            ))}
+          </div>
+        </div>
+
+        {/* Bloque 1: actividad del periodo */}
+        <div className="grid grid-cols-2 gap-4 lg:grid-cols-5">
+          {acts.map((a) => (
+            <div key={a.label} className="rounded-2xl border border-slate-200 bg-white p-4">
+              <div className="flex items-center gap-2">
+                <div className="flex h-7 w-7 items-center justify-center rounded-lg" style={{ backgroundColor: BRAND.navy + "12" }}><Icon n={a.n} s={15} style={{ color: BRAND.navy }} /></div>
+                <span className="text-xs font-medium text-slate-500">{a.label}</span>
+              </div>
+              <p className="tnum mt-3 text-3xl font-bold tracking-tight text-slate-900">{a.v}</p>
+            </div>
+          ))}
+          <div className="rounded-2xl border-2 p-4" style={{ borderColor: BRAND.navy, backgroundColor: BRAND.navy + "08" }}>
+            <div className="flex items-center gap-2">
+              <div className="flex h-7 w-7 items-center justify-center rounded-lg" style={{ backgroundColor: BRAND.navy + "1a" }}><Icon n="trending" s={15} style={{ color: BRAND.navy }} /></div>
+              <span className="text-xs font-medium text-slate-500">Total interacciones</span>
+            </div>
+            <p className="tnum mt-3 text-3xl font-bold tracking-tight" style={{ color: BRAND.navy }}>{m.totalInter}</p>
+          </div>
+        </div>
+
+        {/* Bloque 2: embudo de conversión del periodo */}
+        <div className="grid gap-4 lg:grid-cols-5">
+          <div className="rounded-2xl border border-slate-200 bg-white p-5 lg:col-span-3">
+            <h3 className="mb-1 text-sm font-semibold text-slate-700">Embudo de conversión</h3>
+            <p className="mb-4 text-xs text-slate-400">Eventos ocurridos en el periodo. El % es respecto al nivel anterior.</p>
+            <div className="space-y-2.5">
+              {embudo.map((e, i) => {
+                const prev = i > 0 ? embudo[i - 1].v : null;
+                const conv = i > 0 ? pct(e.v, prev) : null;
+                return (
+                  <div key={e.label} className="flex items-center gap-3">
+                    <span className="w-32 flex-shrink-0 text-xs text-slate-500">{e.label}</span>
+                    <div className="h-8 flex-1 overflow-hidden rounded-md bg-slate-100">
+                      <div className="flex h-full items-center justify-end rounded-md pr-2 transition-all" style={{ width: Math.max(6, (e.v / maxEmbudo) * 100) + "%", backgroundColor: e.color }}>
+                        {e.v > 0 && <span className="tnum text-xs font-bold text-white">{e.v}</span>}
+                      </div>
+                    </div>
+                    <span className="tnum w-12 flex-shrink-0 text-right text-[11px] font-medium text-slate-400">{conv == null ? "" : conv + "%"}</span>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Bloque 3: conversión por tipo de acción */}
+          <div className="rounded-2xl border border-slate-200 bg-white p-5 lg:col-span-2">
+            <h3 className="mb-1 text-sm font-semibold text-slate-700">Conversión por canal</h3>
+            <p className="mb-4 text-xs text-slate-400">Qué acción convirtió leads a prospecto.</p>
+            {totalConv === 0 ? <Empty text="Sin conversiones en el periodo." /> : (
+              <div className="space-y-3">
+                {[["Llamada", m.convPorCat.Llamada], ["Correo", m.convPorCat.Correo], ["Presencial", m.convPorCat.Presencial], ["Otra", m.convPorCat.Otra]].map(([cat, v]) => (
+                  <div key={cat}>
+                    <div className="mb-1 flex items-center justify-between text-xs"><span className="text-slate-600">{cat}</span><span className="tnum font-semibold text-slate-700">{v}{totalConv > 0 && v > 0 ? " · " + Math.round((v / totalConv) * 100) + "%" : ""}</span></div>
+                    <div className="h-2 overflow-hidden rounded-full bg-slate-100"><div className="h-full rounded-full" style={{ width: (totalConv > 0 ? (v / totalConv) * 100 : 0) + "%", backgroundColor: BRAND.navy }} /></div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Bloque 4: tendencia */}
+        <div className="rounded-2xl border border-slate-200 bg-white p-5">
+          <h3 className="mb-1 text-sm font-semibold text-slate-700">Tendencia de actividad</h3>
+          <p className="mb-4 text-xs text-slate-400">Interacciones por {marco === "diario" ? "día (últimos 7)" : marco === "semanal" ? "semana (últimas 6)" : "mes (últimos 6)"}.</p>
+          <div className="flex items-end justify-between gap-2" style={{ height: "140px" }}>
+            {m.tendencia.map((t, i) => (
+              <div key={i} className="flex flex-1 flex-col items-center justify-end gap-1.5" style={{ height: "100%" }}>
+                <span className="tnum text-[10px] font-semibold text-slate-400">{t.n > 0 ? t.n : ""}</span>
+                <div className="w-full rounded-t transition-all" style={{ height: Math.max(2, (t.n / maxTend) * 100) + "%", backgroundColor: i === m.tendencia.length - 1 ? BRAND.navy : "#94a3b8" }} />
+                <span className="text-[10px] text-slate-400">{t.label}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <p className="text-center text-[10px] text-slate-300">Los indicadores cuentan la actividad registrada en la bitácora y los movimientos del tablero. Se llenan con el uso diario.</p>
+      </div>
+    );
+  }
+
 
   /* ----------------------------------------------------------------- */
   /*  Base de Datos (placeholder — el motor de importación llega en F2)*/
