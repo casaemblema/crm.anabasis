@@ -49,6 +49,8 @@
   ];
   // Paleta de marca Anabasis (acentos en datos funcionales).
   const BRAND = { teal: "#0A7E6B", navy: "#1B3A6B", orange: "#D95F1A", dark: "#0F1923" };
+  // Categorías de interacción para la bitácora de leads.
+  const CATEGORIAS_CONTACTO = ["Llamada", "Correo", "Presencial", "Otra"];
   const CLIENT_TYPES = [
     { id: "privada",       label: "Privada / Corporativo", color: "#0d9488", bg: "#ccfbf1" },
     { id: "desarrollador", label: "Desarrollador inmob.",  color: "#7c3aed", bg: "#ede9fe" },
@@ -78,6 +80,7 @@
 
   const fmtMXN = (n) => new Intl.NumberFormat("es-MX", { style: "currency", currency: "MXN", maximumFractionDigits: 0 }).format(n || 0);
   const fmtDate = (d) => (d ? new Date(d + "T00:00:00").toLocaleDateString("es-MX", { day: "2-digit", month: "short", year: "numeric" }) : "—");
+  const fmtDateTime = (iso) => (iso ? new Date(iso).toLocaleString("es-MX", { day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" }) : "—");
   const todayISO = () => new Date().toISOString().slice(0, 10);
   const uid = () => (crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(36) + Math.random().toString(36).slice(2));
   const stageOf = (id) => STAGES.find((s) => s.id === id) || STAGES[0];
@@ -1164,24 +1167,34 @@
   function Contacts({ data, upsert, remove, search, setSearch }) {
     const [editing, setEditing] = useState(null);
     const [verPapelera, setVerPapelera] = useState(false);
-    const empty = { id: null, empresa: "", nombre: "", puesto: "", email: "", telefono: "", tipo: "privada", giro: "", municipio: "", estado: "activo", notas: "" };
-    // Activos = sin estado o estado "activo". Papelera = estado "descartado".
+    const [convertir, setConvertir] = useState(null); // lead a convertir en prospecto
+    const empty = { id: null, empresa: "", nombre: "", puesto: "", email: "", telefono: "", tipo: "privada", giro: "", municipio: "", estado: "activo", notas: "", bitacora: [], prioritario: false };
     const esActivo = (c) => (c.estado || "activo") === "activo";
+    // Un lead está "en seguimiento" si tiene al menos una interacción en bitácora, o una nota previa.
+    const enSeguimiento = (c) => (c.bitacora && c.bitacora.length > 0) || (c.notas && c.notas.trim().length > 0);
     const base = data.contacts.filter((c) => verPapelera ? c.estado === "descartado" : esActivo(c));
     const q = search.toLowerCase();
-    const filtered = base.filter((c) => ((c.nombre || "") + " " + (c.empresa || "") + " " + (c.email || "") + " " + (c.giro || "") + " " + (c.municipio || "")).toLowerCase().includes(q));
+    const filtered = base.filter((c) => ((c.nombre || "") + " " + (c.empresa || "") + " " + (c.email || "") + " " + (c.giro || "") + " " + (c.municipio || "")).toLowerCase().includes(q))
+      // Orden alfabético por empresa (o nombre si no hay empresa).
+      .sort((a, b) => (a.empresa || a.nombre || "").localeCompare(b.empresa || b.nombre || "", "es", { sensitivity: "base" }));
     const nActivos = data.contacts.filter(esActivo).length;
     const nPapelera = data.contacts.filter((c) => c.estado === "descartado").length;
 
     const descartar = (c) => upsert("contacts", { ...c, estado: "descartado", descartadoEn: new Date().toISOString() });
     const restaurar = (c) => upsert("contacts", { ...c, estado: "activo" });
+    const togglePrioritario = (c) => upsert("contacts", { ...c, prioritario: !c.prioritario });
 
-    // Promueve un Lead a Prospecto y lo retira de la lista activa de leads.
-    const contactar = (c) => {
+    // Convierte un Lead a Prospecto registrando la interacción clave de conversión.
+    const hacerProspecto = (c, categoriaConversion, descripcionConversion) => {
       const oid = uid();
+      const ahora = new Date().toISOString();
+      // La conversión queda como última entrada en la bitácora del lead.
+      const entryConversion = { id: uid(), fecha: ahora, categoria: categoriaConversion, descripcion: descripcionConversion || "Interacción de conversión a Prospecto", compromisos: "", conversion: true };
+      const bitacora = [...(c.bitacora || []), entryConversion];
       upsert("opportunities", { id: oid, nombre: "Prospecto · " + (c.empresa || c.nombre), empresa: c.empresa || c.nombre || "", contacto: c.nombre || "", tipo: c.tipo || "privada", origen: "", valor: 0, etapa: "prospecto", inicio: todayISO(), cierre: todayISO(), cierreAbierto: false, responsable: "", notas: c.giro ? "Giro: " + c.giro : "", acuerdos: "", pendientes: "", cierresPrevios: 0 });
-      upsert("movements", { id: uid(), oppId: oid, oppNombre: "Prospecto · " + (c.empresa || c.nombre), empresa: c.empresa || "", from: "lead", to: "prospecto", tipo: "avance", comentario: "Contactado desde Leads", monto: 0, fecha: new Date().toISOString() });
-      upsert("contacts", { ...c, estado: "convertido" });
+      upsert("movements", { id: uid(), oppId: oid, oppNombre: "Prospecto · " + (c.empresa || c.nombre), empresa: c.empresa || "", from: "lead", to: "prospecto", tipo: "avance", comentario: "Conversión vía " + categoriaConversion, categoria: categoriaConversion, monto: 0, fecha: ahora });
+      upsert("contacts", { ...c, estado: "convertido", bitacora });
+      setConvertir(null);
     };
 
     return (
@@ -1189,12 +1202,20 @@
         <div className="flex items-end justify-between">
           <div>
             <h2 className="text-xl font-bold tracking-tight text-slate-900">{verPapelera ? "Papelera de Leads" : "Leads"}</h2>
-            <p className="mt-0.5 text-sm text-slate-500">{verPapelera ? "Leads descartados. Puedes restaurarlos." : "Universo de contactos. Al contactar uno, sube al Tablero como Prospecto."}</p>
+            <p className="mt-0.5 text-sm text-slate-500">{verPapelera ? "Leads descartados. Puedes restaurarlos." : "Registra interacciones; al agendar videollamada, pasa el lead a Prospecto."}</p>
           </div>
           <button onClick={() => { setVerPapelera(!verPapelera); }} className={"flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-sm font-medium " + (verPapelera ? "border-[#0A7E6B] text-[#0A7E6B]" : "border-slate-200 bg-white text-slate-500 hover:bg-slate-50")}>
             <Icon n="trash" s={14} /> {verPapelera ? "Volver a Leads" : "Papelera"}{nPapelera > 0 && <span className="tnum rounded-full bg-slate-100 px-1.5 text-[10px]">{nPapelera}</span>}
           </button>
         </div>
+        {/* Leyenda de estados */}
+        {!verPapelera && (
+          <div className="flex flex-wrap items-center gap-4 text-[11px] text-slate-400">
+            <span className="flex items-center gap-1.5"><span className="h-3 w-3 rounded border-2 border-slate-200" /> Sin contactar</span>
+            <span className="flex items-center gap-1.5"><span className="h-3 w-3 rounded border-2" style={{ borderColor: BRAND.orange }} /> En seguimiento</span>
+            <span className="flex items-center gap-1.5"><Icon n="flag" s={12} className="text-red-500" /> Prioritario</span>
+          </div>
+        )}
         <div className="flex items-center justify-between gap-3">
           <div className="relative max-w-xs flex-1">
             <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"><Icon n="search" s={15} /></span>
@@ -1209,25 +1230,34 @@
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
             {filtered.map((c) => {
               const t = typeOf(c.tipo);
+              const seg = enSeguimiento(c);
+              const nInter = (c.bitacora || []).length;
               return (
-                <div key={c.id} className="group rounded-2xl border border-slate-200 bg-white p-4 transition-all hover:shadow-md">
+                <div key={c.id} className="group relative rounded-2xl border-2 bg-white p-4 transition-all hover:shadow-md" style={{ borderColor: verPapelera ? "#e2e8f0" : (seg ? BRAND.orange : "#e2e8f0") }}>
+                  {!verPapelera && c.prioritario && <span className="absolute -right-1.5 -top-1.5 flex h-6 w-6 items-center justify-center rounded-full bg-red-500 text-white shadow" title="Prioritario"><Icon n="flag" s={12} /></span>}
                   <div className="flex cursor-pointer items-start justify-between" onClick={() => setEditing(c)}>
                     <div className="flex h-9 w-9 items-center justify-center rounded-full text-sm font-semibold" style={{ backgroundColor: t.bg, color: t.color }}>{(c.nombre || "?").slice(0, 1).toUpperCase()}</div>
                     <Badge color={t.color} bg={t.bg}>{t.label.split(" ")[0]}</Badge>
                   </div>
-                  <p className="mt-3 cursor-pointer text-sm font-semibold text-slate-800" onClick={() => setEditing(c)}>{c.nombre || "Sin nombre"}</p>
+                  <p className="mt-3 cursor-pointer text-sm font-semibold text-slate-800" onClick={() => setEditing(c)}>{c.empresa || c.nombre || "Sin nombre"}</p>
+                  {c.nombre && c.empresa && <p className="text-xs text-slate-500">{c.nombre}</p>}
                   {c.giro && <p className="truncate text-xs text-slate-500" title={c.giro}>{c.giro}</p>}
                   {c.municipio && <p className="text-[11px] text-slate-400">{c.municipio}</p>}
                   <div className="mt-3 space-y-1 border-t border-slate-100 pt-3">
                     {c.email && <p className="flex items-center gap-1.5 text-xs text-slate-500"><Icon n="mail" s={12} /> {c.email}</p>}
                     {c.telefono && <p className="flex items-center gap-1.5 text-xs text-slate-500"><Icon n="phone" s={12} /> {c.telefono}</p>}
+                    {seg && !verPapelera && <p className="tnum text-[11px] font-medium" style={{ color: BRAND.orange }}>{nInter > 0 ? nInter + " interacción(es)" : "Con notas"}</p>}
                   </div>
                   {verPapelera ? (
                     <button onClick={() => restaurar(c)} className="mt-3 flex w-full items-center justify-center gap-1.5 rounded-lg border border-[#0A7E6B]/30 bg-[#0A7E6B]/5 py-1.5 text-xs font-semibold text-[#0A7E6B] hover:bg-[#0A7E6B]/10"><Icon n="refresh" s={13} /> Restaurar</button>
                   ) : (
-                    <div className="mt-3 flex gap-2">
-                      <button onClick={() => contactar(c)} className="flex flex-1 items-center justify-center gap-1.5 rounded-lg border border-[#0A7E6B]/30 bg-[#0A7E6B]/5 py-1.5 text-xs font-semibold text-[#0A7E6B] hover:bg-[#0A7E6B]/10"><Icon n="arrowR" s={13} /> Contactado</button>
-                      <button onClick={() => descartar(c)} title="Mover a papelera" className="flex items-center justify-center rounded-lg border border-slate-200 px-2 py-1.5 text-slate-400 hover:bg-slate-50 hover:text-red-500"><Icon n="trash" s={13} /></button>
+                    <div className="mt-3 space-y-2">
+                      <div className="flex gap-2">
+                        <button onClick={() => setEditing(c)} className="flex flex-1 items-center justify-center gap-1.5 rounded-lg border border-slate-200 py-1.5 text-xs font-semibold text-slate-600 hover:bg-slate-50"><Icon n="plus" s={13} /> Interacción</button>
+                        <button onClick={() => togglePrioritario(c)} title={c.prioritario ? "Quitar prioritario" : "Marcar prioritario"} className={"flex items-center justify-center rounded-lg border px-2 py-1.5 " + (c.prioritario ? "border-red-300 bg-red-50 text-red-500" : "border-slate-200 text-slate-400 hover:bg-slate-50")}><Icon n="flag" s={13} /></button>
+                        <button onClick={() => descartar(c)} title="Mover a papelera" className="flex items-center justify-center rounded-lg border border-slate-200 px-2 py-1.5 text-slate-400 hover:bg-slate-50 hover:text-red-500"><Icon n="trash" s={13} /></button>
+                      </div>
+                      <button onClick={() => setConvertir(c)} className="flex w-full items-center justify-center gap-1.5 rounded-lg py-1.5 text-xs font-semibold text-white bg-[#0A7E6B] hover:bg-[#096353]"><Icon n="arrowR" s={13} /> Pasar a Prospecto</button>
                     </div>
                   )}
                 </div>
@@ -1236,20 +1266,58 @@
           </div>
         )}
         {editing && <ContactModal c={editing} onClose={() => setEditing(null)} onSave={(x) => { upsert("contacts", x); setEditing(null); }} onDelete={(id) => { remove("contacts", id); setEditing(null); }} />}
+        {convertir && <ConvertirModal lead={convertir} onClose={() => setConvertir(null)} onConfirm={hacerProspecto} />}
       </div>
     );
   }
+
+  // Modal de conversión: exige la categoría de la interacción clave que volvió prospecto al lead.
+  function ConvertirModal({ lead, onClose, onConfirm }) {
+    const [categoria, setCategoria] = useState("Llamada");
+    const [descripcion, setDescripcion] = useState("");
+    return (
+      <Modal title="Pasar a Prospecto" onClose={onClose}>
+        <div className="space-y-3">
+          <p className="text-sm text-slate-500">Registra la <span className="font-medium text-slate-700">interacción clave</span> que convirtió a <span className="font-medium text-slate-700">{lead.empresa || lead.nombre}</span> en prospecto. Quedará como última entrada de su bitácora.</p>
+          <Field label="Categoría de la interacción de conversión *">
+            <select className={inputCls} value={categoria} onChange={(e) => setCategoria(e.target.value)}>
+              {CATEGORIAS_CONTACTO.map((x) => <option key={x} value={x}>{x}</option>)}
+            </select>
+          </Field>
+          <Field label="Descripción (opcional)"><textarea rows={2} className={inputCls} value={descripcion} onChange={(e) => setDescripcion(e.target.value)} placeholder="Ej. Aceptó videollamada para el jueves." /></Field>
+          <div className="rounded-lg bg-[#0A7E6B]/5 px-3 py-2 text-xs text-slate-500">Al confirmar, se crea la tarjeta en el Tablero (etapa Prospecto) y se registra el movimiento Lead → Prospecto.</div>
+          <div className="flex justify-end gap-2 pt-1">
+            <button onClick={onClose} className="rounded-lg px-4 py-2 text-sm font-medium text-slate-500 hover:bg-slate-100">Cancelar</button>
+            <button onClick={() => onConfirm(lead, categoria, descripcion)} className="rounded-lg px-4 py-2 text-sm font-medium text-white bg-[#0A7E6B] hover:bg-[#096353]">Confirmar conversión</button>
+          </div>
+        </div>
+      </Modal>
+    );
+  }
   function ContactModal({ c, onClose, onSave, onDelete }) {
-    const [f, setF] = useState({ ...c });
+    const [f, setF] = useState({ bitacora: [], prioritario: false, ...c });
     const set = (k, v) => setF((p) => ({ ...p, [k]: v }));
+    // Formulario de nueva interacción para la bitácora.
+    const nowLocal = () => { const d = new Date(); d.setMinutes(d.getMinutes() - d.getTimezoneOffset()); return d.toISOString().slice(0, 16); };
+    const [inter, setInter] = useState({ descripcion: "", categoria: "Llamada", compromisos: "", fecha: nowLocal() });
+    const bitacora = (f.bitacora || []).slice().sort((a, b) => (b.fecha || "").localeCompare(a.fecha || ""));
+
+    const agregarInteraccion = () => {
+      if (!inter.descripcion.trim()) return;
+      const entry = { id: uid(), descripcion: inter.descripcion.trim(), categoria: inter.categoria, compromisos: inter.compromisos.trim(), fecha: new Date(inter.fecha).toISOString() };
+      setF((p) => ({ ...p, bitacora: [...(p.bitacora || []), entry] }));
+      setInter({ descripcion: "", categoria: "Llamada", compromisos: "", fecha: nowLocal() });
+    };
+    const borrarInteraccion = (id) => setF((p) => ({ ...p, bitacora: (p.bitacora || []).filter((e) => e.id !== id) }));
+
     return (
       <Modal title={c.id ? "Editar lead" : "Nuevo lead"} onClose={onClose}>
         <div className="space-y-3">
           <div className="grid grid-cols-2 gap-3">
-            <Field label="Nombre *"><input className={inputCls} value={f.nombre || ""} onChange={(e) => set("nombre", e.target.value)} autoFocus /></Field>
+            <Field label="Nombre del contacto"><input className={inputCls} value={f.nombre || ""} onChange={(e) => set("nombre", e.target.value)} autoFocus /></Field>
             <Field label="Puesto"><input className={inputCls} value={f.puesto || ""} onChange={(e) => set("puesto", e.target.value)} /></Field>
           </div>
-          <Field label="Empresa"><input className={inputCls} value={f.empresa || ""} onChange={(e) => set("empresa", e.target.value)} /></Field>
+          <Field label="Empresa *"><input className={inputCls} value={f.empresa || ""} onChange={(e) => set("empresa", e.target.value)} /></Field>
           <div className="grid grid-cols-2 gap-3">
             <Field label="Email"><input className={inputCls} value={f.email || ""} onChange={(e) => set("email", e.target.value)} /></Field>
             <Field label="Teléfono"><input className={inputCls} value={f.telefono || ""} onChange={(e) => set("telefono", e.target.value)} /></Field>
@@ -1258,13 +1326,57 @@
             <Field label="Giro / actividad"><input className={inputCls} value={f.giro || ""} onChange={(e) => set("giro", e.target.value)} /></Field>
             <Field label="Municipio"><input className={inputCls} value={f.municipio || ""} onChange={(e) => set("municipio", e.target.value)} /></Field>
           </div>
-          <Field label="Tipo de cliente"><select className={inputCls} value={f.tipo} onChange={(e) => set("tipo", e.target.value)}>{CLIENT_TYPES.map((t) => <option key={t.id} value={t.id}>{t.label}</option>)}</select></Field>
-          <Field label="Notas"><textarea rows={2} className={inputCls} value={f.notas || ""} onChange={(e) => set("notas", e.target.value)} /></Field>
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="Tipo de cliente"><select className={inputCls} value={f.tipo} onChange={(e) => set("tipo", e.target.value)}>{CLIENT_TYPES.map((t) => <option key={t.id} value={t.id}>{t.label}</option>)}</select></Field>
+            <Field label="Prioridad">
+              <label className="flex h-[38px] cursor-pointer items-center gap-2 rounded-lg border border-slate-200 px-3 text-sm text-slate-600"><input type="checkbox" className="h-4 w-4 accent-red-500" checked={!!f.prioritario} onChange={(e) => set("prioritario", e.target.checked)} /> <Icon n="flag" s={13} className={f.prioritario ? "text-red-500" : "text-slate-300"} /> Prioritario</label>
+            </Field>
+          </div>
+          <Field label="Notas generales"><textarea rows={2} className={inputCls} value={f.notas || ""} onChange={(e) => set("notas", e.target.value)} placeholder="Contexto general del lead (sin fecha)." /></Field>
+
+          {/* Bitácora de contacto */}
+          <div className="rounded-xl border border-slate-200 bg-slate-50/60 p-3">
+            <div className="mb-2 flex items-center gap-2">
+              <Icon n="check" s={14} style={{ color: BRAND.orange }} />
+              <span className="text-sm font-semibold text-slate-700">Bitácora de contacto</span>
+              <span className="tnum ml-auto rounded-full bg-white px-1.5 py-0.5 text-[10px] font-medium text-slate-400">{bitacora.length}</span>
+            </div>
+            {/* Nueva interacción */}
+            <div className="space-y-2 rounded-lg border border-slate-200 bg-white p-2.5">
+              <div className="grid grid-cols-2 gap-2">
+                <select className={inputCls + " text-sm"} value={inter.categoria} onChange={(e) => setInter((p) => ({ ...p, categoria: e.target.value }))}>
+                  {CATEGORIAS_CONTACTO.map((x) => <option key={x} value={x}>{x}</option>)}
+                </select>
+                <input type="datetime-local" className={inputCls + " text-sm"} value={inter.fecha} onChange={(e) => setInter((p) => ({ ...p, fecha: e.target.value }))} />
+              </div>
+              <textarea rows={2} className={inputCls + " text-sm"} value={inter.descripcion} onChange={(e) => setInter((p) => ({ ...p, descripcion: e.target.value }))} placeholder="Descripción de la interacción (ej. le llamé y no lo encontré)" />
+              <input className={inputCls + " text-sm"} value={inter.compromisos} onChange={(e) => setInter((p) => ({ ...p, compromisos: e.target.value }))} placeholder="Compromisos (ej. quedé en llamarle mañana)" />
+              <button onClick={agregarInteraccion} className="flex w-full items-center justify-center gap-1.5 rounded-lg py-1.5 text-xs font-semibold text-white bg-[#0A7E6B] hover:bg-[#096353]"><Icon n="plus" s={13} /> Registrar interacción</button>
+            </div>
+            {/* Historial */}
+            {bitacora.length > 0 && (
+              <div className="mt-2 max-h-56 space-y-1.5 overflow-y-auto">
+                {bitacora.map((e) => (
+                  <div key={e.id} className={"rounded-lg border bg-white p-2.5 text-xs " + (e.conversion ? "border-[#0A7E6B]/40" : "border-slate-100")}>
+                    <div className="flex items-center gap-2">
+                      <span className="rounded-full px-1.5 py-0.5 text-[10px] font-semibold" style={{ backgroundColor: BRAND.navy + "15", color: BRAND.navy }}>{e.categoria}</span>
+                      {e.conversion && <span className="rounded-full bg-[#0A7E6B]/10 px-1.5 py-0.5 text-[10px] font-semibold text-[#0A7E6B]">Conversión</span>}
+                      <span className="tnum ml-auto text-[10px] text-slate-400">{fmtDateTime(e.fecha)}</span>
+                      <button onClick={() => borrarInteraccion(e.id)} className="text-slate-300 hover:text-red-500"><Icon n="trash" s={11} /></button>
+                    </div>
+                    <p className="mt-1 text-slate-700">{e.descripcion}</p>
+                    {e.compromisos && <p className="mt-0.5 text-slate-500"><span className="font-medium">Compromiso:</span> {e.compromisos}</p>}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
           <div className="flex items-center justify-between pt-1">
             {c.id ? <button onClick={() => onDelete(c.id)} className="flex items-center gap-1.5 rounded-lg px-3 py-2 text-sm font-medium text-red-600 hover:bg-red-50"><Icon n="trash" s={14} /> Eliminar</button> : <span />}
             <div className="flex gap-2">
               <button onClick={onClose} className="rounded-lg px-4 py-2 text-sm font-medium text-slate-500 hover:bg-slate-100">Cancelar</button>
-              <button onClick={() => f.nombre.trim() && onSave({ ...f, id: f.id || uid(), estado: f.estado || "activo" })} className="rounded-lg bg-[#0A7E6B] px-4 py-2 text-sm font-medium text-white hover:bg-[#096353]">Guardar</button>
+              <button onClick={() => (f.empresa || f.nombre || "").trim() && onSave({ ...f, id: f.id || uid(), estado: f.estado || "activo" })} className="rounded-lg bg-[#0A7E6B] px-4 py-2 text-sm font-medium text-white hover:bg-[#096353]">Guardar</button>
             </div>
           </div>
         </div>
