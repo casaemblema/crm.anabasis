@@ -635,12 +635,17 @@
             </div>
           </div>
 
-          {/* Bloque 3: conversión por tipo de acción */}
+          {/* Bloque 3: conversiones del periodo */}
           <div className="rounded-2xl border border-slate-200 bg-white p-5 lg:col-span-2">
-            <h3 className="mb-1 text-sm font-semibold text-slate-700">Conversión por canal</h3>
-            <p className="mb-4 text-xs text-slate-400">Qué acción convirtió leads a prospecto.</p>
-            {totalConv === 0 ? <Empty text="Sin conversiones en el periodo." /> : (
-              <div className="space-y-3">
+            <h3 className="mb-1 text-sm font-semibold text-slate-700">Conversiones del periodo</h3>
+            <p className="mb-4 text-xs text-slate-400">Acciones clave de avance por etapa.</p>
+
+            {/* Lead → Prospecto: con desglose por canal */}
+            <p className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-slate-400">Lead → Prospecto · por canal</p>
+            {totalConv === 0 ? (
+              <p className="mb-4 rounded-lg bg-slate-50 py-3 text-center text-xs text-slate-300">Sin conversiones a prospecto en el periodo.</p>
+            ) : (
+              <div className="mb-4 space-y-2.5">
                 {[["Llamada", m.convPorCat.Llamada], ["Correo", m.convPorCat.Correo], ["Presencial", m.convPorCat.Presencial], ["Otra", m.convPorCat.Otra]].map(([cat, v]) => (
                   <div key={cat}>
                     <div className="mb-1 flex items-center justify-between text-xs"><span className="text-slate-600">{cat}</span><span className="tnum font-semibold text-slate-700">{v}{totalConv > 0 && v > 0 ? " · " + Math.round((v / totalConv) * 100) + "%" : ""}</span></div>
@@ -649,6 +654,18 @@
                 ))}
               </div>
             )}
+
+            {/* Demás conversiones: conteo simple */}
+            <p className="mb-2 border-t border-slate-100 pt-3 text-[11px] font-semibold uppercase tracking-wide text-slate-400">Avances por etapa · conteo</p>
+            <div className="space-y-1.5">
+              {[["Prospecto → Oportunidad", m.aOportunidad, "#4A6299"], ["Oportunidad → Negociación", m.aNegociacion, "#2A4372"], ["Negociación → Cierre", m.aCierre, "#152A4D"]].map(([lbl, v, color]) => (
+                <div key={lbl} className="flex items-center gap-2 rounded-lg bg-slate-50/70 px-3 py-2">
+                  <span className="h-2 w-2 flex-shrink-0 rounded-full" style={{ backgroundColor: color }} />
+                  <span className="flex-1 text-xs text-slate-600">{lbl}</span>
+                  <span className="tnum text-sm font-bold text-slate-800">{v}</span>
+                </div>
+              ))}
+            </div>
           </div>
         </div>
 
